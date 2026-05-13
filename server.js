@@ -148,6 +148,27 @@ io.on('connection', (socket) => {
     io.to(code).emit('room_update', { code, players: rooms[code].players });
   });
 
+  // ── request_game_state ────────────────────────────────────────────────────
+  // Client emits this on GameScreen mount to resync in case they missed the
+  // initial broadcast (navigation happens after game_state fires).
+  // payload: { code: string, playerId: string }
+  socket.on('request_game_state', ({ code, playerId }) => {
+    const game = games[code];
+    if (!game) return;
+    console.log(`[request_game_state] code="${code}" socket.id=${socket.id}`);
+
+    // Rebind socket if reconnected
+    const player = game.players.find(p => p.playerId === playerId);
+    if (player) {
+      if (player.id !== socket.id) {
+        player.id = socket.id;
+        socket.join(code);
+      }
+      const snapshot = buildSnapshot(game, socket.id);
+      socket.emit('game_state', { code, ...snapshot });
+    }
+  });
+
   // ── start_game ─────────────────────────────────────────────────────────────
   socket.on('start_game', ({ code, playerId }) => {
     console.log('🔥 start_game received:', { code, socketId: socket.id, playerId });
@@ -185,9 +206,9 @@ io.on('connection', (socket) => {
     }
     console.log('✅ Host verified via playerId');
 
-    if (room.players.length < 2) {
+    if (room.players.length < 1) {
       console.log('❌ Not enough players:', room.players.length);
-      socket.emit('game_error', { message: 'Need at least 2 players.' });
+      socket.emit('game_error', { message: 'Need at least 1 player.' });
       return;
     }
 

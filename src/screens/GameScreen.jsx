@@ -582,13 +582,6 @@ export default function GameScreen() {
       onGameState: (data) => {
         const myHand = data.hand || []
 
-        // ── Navigate to game screen when server state becomes 'playing' ──
-        // This fires for ALL players (host and joiners) simultaneously.
-        if (data.state === 'playing') {
-          console.log('[Game] Game started via game_state')
-          setScreen('game')
-        }
-
         setPlayerHand(myHand)
         setDiscardPile(data.discardPile || [])
         setDrawPile([])  // server manages the deck; we only show deckSize
@@ -596,7 +589,6 @@ export default function GameScreen() {
         // Map server player index to local currentTurn (0 = me, 1+ = AI)
         const myIndex = (data.players || []).findIndex(p => p.id === mySocketId)
         const serverTurnIndex = (data.players || []).findIndex(p => p.id === data.currentTurn)
-        // Remap: if server turn is myIndex → 0, else map to 1-based AI slot
         const localTurn = serverTurnIndex === myIndex ? 0 : serverTurnIndex
         setCurrentTurn(localTurn)
         currentTurnRef.current = localTurn
@@ -622,7 +614,6 @@ export default function GameScreen() {
           setGameState('discard')
           setHasDrawn(true)
         }
-        // If not my turn, leave gameState as-is (UI shows waiting state naturally)
 
         console.log('[GameScreen] game_state synced', {
           myTurn,
@@ -646,6 +637,13 @@ export default function GameScreen() {
         setTimeout(() => setScreen('home'), 2500)
       },
     })
+
+    // Request current game state in case we missed the broadcast
+    // (GameScreen mounts after navigation, so the first game_state may have fired already)
+    import('../services/gameSocket').then(({ getOrCreatePlayerId }) => {
+      s.emit('request_game_state', { code: activeRoomCode, playerId: getOrCreatePlayerId() })
+      console.log('[GameScreen] requested game_state resync')
+    }).catch(() => {})
 
     return cleanup
   }, [isMultiplayer, activeRoomCode])

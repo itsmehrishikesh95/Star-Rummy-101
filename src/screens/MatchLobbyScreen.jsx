@@ -132,6 +132,7 @@ export default function MatchLobbyScreen() {
   const [feed,           setFeed]           = useState([])
   const [showBotPrompt,  setShowBotPrompt]  = useState(false)
   const [botsAdded,      setBotsAdded]      = useState(false)
+  const [gameError,      setGameError]      = useState('')
 
   const lastJoinedIdRef  = useRef(null)
   const botTimerRef      = useRef(null)
@@ -176,8 +177,30 @@ export default function MatchLobbyScreen() {
     s.on('room_update', handleRoomUpdate)
     console.log('[Lobby] Subscribed to room_update')
 
+    // ── Listen for game_error so host sees why start failed ──
+    const handleGameError = (data) => {
+      console.warn('[Lobby] game_error:', data)
+      setGameError(data.message || 'Could not start game')
+      setTimeout(() => setGameError(''), 4000)
+    }
+    s.on('game_error', handleGameError)
+
+    // ── Listen for game_state — navigate ALL players when game starts ──────
+    // game_state with state:'playing' is the single source of truth for start.
+    // We must listen here (in lobby) because GameScreen isn't mounted yet
+    // when the server sends the first game_state after start_game.
+    const handleGameState = (data) => {
+      if (data.state === 'playing') {
+        console.log('[Lobby] game_state received with state:playing — navigating to game')
+        setScreen('game')
+      }
+    }
+    s.on('game_state', handleGameState)
+
     return () => {
       s.off('room_update', handleRoomUpdate)
+      s.off('game_error', handleGameError)
+      s.off('game_state', handleGameState)
     }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -226,7 +249,7 @@ export default function MatchLobbyScreen() {
     return list.slice(0, tableSize)
   }, [players, tableSize])
 
-  const canStart = players.length >= 2
+  const canStart = players.length >= 1   // host can start alone (bots fill remaining slots)
   const isFull   = players.length >= tableSize
   const fillPct  = Math.round((players.length / tableSize) * 100)
 
@@ -486,6 +509,19 @@ export default function MatchLobbyScreen() {
         borderTop: `1px solid ${C.border}`,
         display: 'flex', flexDirection: 'column', gap: 8,
       }}>
+        {/* Game error banner */}
+        {gameError && (
+          <div style={{
+            background: 'rgba(239,83,80,0.12)',
+            border: '1px solid rgba(239,83,80,0.4)',
+            borderRadius: 12,
+            padding: '10px 14px',
+            fontSize: 13, fontWeight: 700, color: '#ef5350',
+            display: 'flex', alignItems: 'center', gap: 8,
+          }}>
+            <span>❌</span><span>{gameError}</span>
+          </div>
+        )}
         {isRoomHost ? (
           /* ── HOST: can start the game ── */
           <button
