@@ -37,6 +37,22 @@ class SocketService {
     this.socket.on('connect', () => {
       this.isConnected = true
       console.log('✓ Socket connected:', this.socket.id)
+
+      // On reconnect, re-enter any active room so broadcasts still reach this socket.
+      // Uses dynamic imports to avoid circular dependencies.
+      Promise.all([
+        import('../store'),
+        import('./gameSocket'),
+      ]).then(([{ default: useGameStore }, { getOrCreatePlayerId }]) => {
+        const code = useGameStore?.getState?.().activeRoomCode
+        if (!code) return
+        const playerId = getOrCreatePlayerId?.()
+        if (!playerId) return
+        this.socket.emit('rejoin_room', { code, playerId })
+        console.log('[Socket] rejoin_room emitted after reconnect:', { code, playerId })
+      }).catch(() => {
+        // Non-critical — reconnect heal also happens inside start_game handler
+      })
     })
 
     this.socket.on('disconnect', () => {

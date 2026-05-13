@@ -111,6 +111,24 @@ io.on('connection', (socket) => {
     socket.emit('room_validated', { code, valid });
   });
 
+  // ── rejoin_room ────────────────────────────────────────────────────────────
+  // Called by client after reconnect to re-enter the Socket.IO room channel.
+  // payload: { code: string, playerId: string }
+  socket.on('rejoin_room', ({ code, playerId }) => {
+    const room = rooms[code];
+    if (!room) return;
+
+    const player = room.players.find(p => p.playerId === playerId);
+    if (!player) return;
+
+    // Update socket.id and re-join the channel
+    player.id = socket.id;
+    if (room.hostPlayerId === playerId) room.host = socket.id;
+    socket.join(code);
+    console.log(`[rejoin_room] playerId="${playerId}" new socket.id=${socket.id} code="${code}"`);
+    socket.emit('room_rejoined', { code });
+  });
+
   // ── join_room ──────────────────────────────────────────────────────────────
   socket.on('join_room', ({ code, playerName }) => {
     if (!code || !rooms[code]) {
@@ -140,27 +158,28 @@ io.on('connection', (socket) => {
       socket.emit('game_error', { message: 'Room not found.' });
       return;
     }
-    console.log('HostPlayerId:', room.hostPlayerId);
+    console.log('HostPlayerId:', room.hostPlayerId, '| players in room:', room.players.length);
 
     // ── Reconnect heal: rebind socket.id if same playerId reconnected ──────
-    const player = room.players.find(p => p.playerId === playerId);
-    if (player && player.id !== socket.id) {
-      console.log('♻️ Rebinding socket after reconnect:', player.id, '→', socket.id);
-      player.id = socket.id;
+    const matchedPlayer = room.players.find(p => p.playerId === playerId);
+    if (matchedPlayer && matchedPlayer.id !== socket.id) {
+      console.log('♻️ Rebinding socket after reconnect:', matchedPlayer.id, '→', socket.id);
+      matchedPlayer.id = socket.id;
       if (room.hostPlayerId === playerId) {
         room.host = socket.id;
       }
+      // Re-join the Socket.IO room channel so broadcasts reach this socket
+      socket.join(code);
     }
 
-    // ── Validate using persistent playerId only — no socket.id fallback ────
-    const callerPlayerId = playerId;
-    if (!callerPlayerId) {
+    // ── Validate using persistent playerId ─────────────────────────────────
+    if (!playerId) {
       console.log('❌ Missing playerId');
       socket.emit('game_error', { message: 'Missing player identity.' });
       return;
     }
-    if (callerPlayerId !== room.hostPlayerId) {
-      console.log('❌ Not host. Expected:', room.hostPlayerId, 'Got:', callerPlayerId);
+    if (playerId !== room.hostPlayerId) {
+      console.log('❌ Not host. Expected:', room.hostPlayerId, 'Got:', playerId);
       socket.emit('game_error', { message: 'Only the host can start.' });
       return;
     }
