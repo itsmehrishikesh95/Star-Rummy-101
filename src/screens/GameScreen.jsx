@@ -15,6 +15,8 @@ import AnimationLayer from './AnimationLayer'
 import startBg from '../assets/NEWGAMETABLE.png'
 import { getCardImage } from '../utils/cardImage'
 import { validateDeclaration as engineValidateDeclaration, isValidGroup as engineIsValidGroup } from '../game/engine'
+import socketService from '../services/socket'
+import { subscribeToGame, emitDrawCard, emitDiscardCard, emitStartGame } from '../services/gameSocket'
 
 const C = {
   bg: '#0a0f0d',
@@ -397,6 +399,8 @@ export default function GameScreen() {
   const setScreen = useGameStore(s => s.setScreen)
   const tableSize = 6
   const user = useGameStore(s => s.user)
+  const activeRoomCode = useGameStore(s => s.activeRoomCode)  // multiplayer room code
+  const isMultiplayer = !!activeRoomCode
 
   const [viewportWidth, setViewportWidth] = useState(
     typeof window !== 'undefined' ? window.innerWidth : 1200
@@ -562,6 +566,82 @@ export default function GameScreen() {
     clearTimeout(confettiTimeoutRef.current)
     clearTimeout(groupFlashTimeoutRef.current)
   }, [])
+
+  // ── MULTIPLAYER BRIDGE ─────────────────────────────────────────────────────
+  // When activeRoomCode is present, subscribe to server game_state and sync to local state.
+  // Does NOT run in solo/mock mode (activeRoomCode is null).
+  useEffect(() => {
+    if (!isMultiplayer) return
+    const s = socketService.socket
+    if (!s?.connected) return
+
+    const mySocketId = s.id
+    console.log('[GameScreen] Multiplayer mode active', { code: activeRoomCode, mySocketId })
+
+    const cleanup = subscribeToGame(activeRoomCode, mySocketId, {
+      onGameState: (data) => {
+        const myHand = data.hand || []
+
+        setPlayerHand(myHand)
+        setDiscardPile(data.discardPile || [])
+        setDrawPile([])  // server manages the deck; we only show deckSize
+
+        // Map server player index to local currentTurn (0 = me, 1+ = AI)
+        const myIndex = (data.players || []).findIndex(p => p.id === mySocketId)
+        const serverTurnIndex = (data.players || []).findIndex(p => p.id === data.currentTurn)
+        // Remap: if server turn is myIndex → 0, else map to 1-based AI slot
+        const localTurn = serverTurnIndex === myIndex ? 0 : serverTurnIndex
+        setCurrentTurn(localTurn)
+        currentTurnRef.current = localTurn
+
+        // Build AI player list from server data (everyone except me)
+        const aiData = (data.players || [])
+          .filter(p => p.id !== mySocketId)
+          .map((p, i) => ({
+            id: i,
+            name: p.name,
+            hand: new Array(p.handSize || 0).fill({ id: `hidden-${i}`, rank: '?', suit: '?' }),
+            score: 0,
+            isEliminated: false,
+          }))
+        setAiPlayers(aiData)
+
+        // Derive local game phase from hand size
+        const myTurn = data.currentTurn === mySocketId
+        if (myTurn && myHand.length <= 13) {
+          setGameState('draw')
+          setHasDrawn(false)
+        } else if (myTurn && myHand.length === 14) {
+          setGameState('discard')
+          setHasDrawn(true)
+        }
+        // If not my turn, leave gameState as-is (UI shows waiting state naturally)
+
+        console.log('[GameScreen] game_state synced', {
+          myTurn,
+          handSize: myHand.length,
+          currentTurn: data.currentTurn,
+        })
+      },
+
+      onGameError: (data) => {
+        console.warn('[Game Error]', data)
+        showToast(data.message || 'Game error')
+      },
+
+      onHostChanged: (data) => {
+        console.log('[GameScreen] host_changed', data)
+        showToast('Host left — game continues')
+      },
+
+      onRoomClosed: (data) => {
+        showToast(data.reason || 'Room closed')
+        setTimeout(() => setScreen('home'), 2500)
+      },
+    })
+
+    return cleanup
+  }, [isMultiplayer, activeRoomCode])
 
   function clearPendingTurnTimers() {
     clearInterval(timerRef.current)
@@ -1411,6 +1491,16 @@ export default function GameScreen() {
 
     if (!runGuarded('draw', () => { }, { fromDiscard })) return
 
+    // ── MULTIPLAYER: emit to server, wait for game_state ──
+    if (isMultiplayer) {
+      emitDrawCard(activeRoomCode)
+      drawPendingRef.current = true
+      // Server will broadcast game_state with updated hand — no local state change
+      setTimeout(() => { drawPendingRef.current = false }, 1000)
+      return
+    }
+
+    // ── SOLO MODE: local state update ──
     drawPendingRef.current = true
     turnEngine.log('DRAW', { fromDiscard, playerHandLength: playerHand.length, isPlayerTurn })
 
@@ -1504,6 +1594,19 @@ export default function GameScreen() {
     
     if (!runGuarded('discard', () => { })) return
 
+    // ── MULTIPLAYER: emit to server, wait for game_state ──
+    if (isMultiplayer) {
+      if (!selectedCard) return
+      discardPendingRef.current = true
+      emitDiscardCard(activeRoomCode, selectedCard.id)
+      setSelectedCard(null)
+      setSelectedCards([])
+      // Server will broadcast updated game_state — release lock after brief delay
+      setTimeout(() => { discardPendingRef.current = false }, 1000)
+      return
+    }
+
+    // ── SOLO MODE: local state update ──
     // FIX: Set discard lock
     discardPendingRef.current = true
 

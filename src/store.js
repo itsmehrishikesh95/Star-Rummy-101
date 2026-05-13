@@ -116,6 +116,7 @@ const useGameStore = create((set, get) => ({
 
   // Lobby flow context (UI only)
   lobbyFlow: null, // null | 'create' | 'join'
+  isRoomHost: false,
   
   // User
   user: null,
@@ -131,6 +132,7 @@ const useGameStore = create((set, get) => ({
   
   // Private room
   privateRoomCode: null,
+  activeRoomCode: null,   // code host generated — joiners validate against this
   
   // Game state
   gameState: null,
@@ -152,6 +154,7 @@ const useGameStore = create((set, get) => ({
   // Actions
   setScreen: (screen) => set({ screen }),
   setLobbyFlow: (lobbyFlow) => set({ lobbyFlow }),
+  setIsRoomHost: (isRoomHost) => set({ isRoomHost }),
   setUser: (user) => set({
     user,
     authToken: user?.jwt || null,
@@ -164,6 +167,7 @@ const useGameStore = create((set, get) => ({
   setGameMode: (mode) => set({ gameMode: mode }),
   setEntryFee: (fee) => set({ entryFee: fee }),
   setPrivateRoomCode: (code) => set({ privateRoomCode: code }),
+  setActiveRoomCode: (code) => set({ activeRoomCode: code }),
   setGameState: (state) => set({ gameState: normalizeGameState(state) }),
   setRoomCode: (code) => set({ roomCode: code }),
   setGameLoading: (isGameLoading) => set({ isGameLoading }),

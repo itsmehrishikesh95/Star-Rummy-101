@@ -4,8 +4,10 @@ import useGameStore from '../store'
 const DOT = { backgroundImage:'radial-gradient(#1A5C35 1px, transparent 1px)', backgroundSize:'20px 20px' }
 const C = { bg:'#0D3320', gold:'#F5C518', goldD:'#D4A020', muted:'#8BA898', purple:'#6B3FA0', purpleD:'#4A2080' }
 
+const genCode = () => Math.floor(1000 + Math.random() * 9000).toString()
+
 export default function SubscriptionScreen() {
-  const { setScreen, addCoins, user } = useGameStore()
+  const { setScreen, addCoins, user, setActiveRoomCode } = useGameStore()
   const [sel, setSel] = useState('pro')
 
   // Prevent guest users from accessing subscription features
@@ -132,7 +134,14 @@ export default function SubscriptionScreen() {
 
       {/* Select Plan fixed bottom */}
       <div style={{ padding:'12px 16px 28px', background:'rgba(5,12,7,0.97)', borderTop:'1px solid rgba(42,92,53,0.3)' }}>
-        <button onClick={()=>{ addCoins(plans.find(p=>p.id===sel)?.coins||6000); alert('✅ Subscribed! Coins added.'); setScreen('match-lobby') }} style={{ width:'100%', padding:'17px', borderRadius:50, border:'2px solid white', background:'transparent', color:'white', fontWeight:900, fontSize:16, cursor:'pointer' }}>
+        <button onClick={() => {
+          const plan = plans.find(p => p.id === sel)
+          addCoins(plan?.coins || 6000)
+          const code = genCode()
+          setActiveRoomCode(code)
+          console.log('[SubscriptionScreen] HOST CODE:', code)
+          setScreen('room-code')
+        }} style={{ width:'100%', padding:'17px', borderRadius:50, border:'2px solid white', background:'transparent', color:'white', fontWeight:900, fontSize:16, cursor:'pointer' }}>
           Select a Plan — ₹{plans.find(p=>p.id===sel)?.price.toLocaleString()}/month
         </button>
       </div>

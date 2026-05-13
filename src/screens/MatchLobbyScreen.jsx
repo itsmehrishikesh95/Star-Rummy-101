@@ -1,24 +1,27 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import useGameStore from '../store'
 import LobbyPlayerSlot from '../components/LobbyPlayerSlot'
+import socketService from '../services/socket'
+import { emitStartGame } from '../services/gameSocket'
 
-const botNames = ['Rahul', 'Sneha', 'Amit', 'Priya', 'Rohit', 'Kiran']
+const BOT_NAMES = ['Rahul', 'Sneha', 'Amit', 'Priya', 'Rohit', 'Kiran']
+const BOT_WAIT_MS = 60_000 // 1 minute before asking about bots
 
 function pickBotName(used) {
-  const available = botNames.filter(n => !used.has(n))
-  const pool = available.length ? available : botNames
+  const available = BOT_NAMES.filter(n => !used.has(n))
+  const pool = available.length ? available : BOT_NAMES
   return pool[Math.floor(Math.random() * pool.length)]
 }
 
 const C = {
-  bg:       '#0a0f0d',
-  card:     '#0f1f16',
-  border:   'rgba(42,92,53,0.35)',
-  gold:     '#F5C518',
-  green:    '#1e7a3e',
-  muted:    'rgba(139,168,152,0.7)',
-  white:    '#ffffff',
-  red:      '#ef5350',
+  bg:     '#0a0f0d',
+  card:   '#0f1f16',
+  border: 'rgba(42,92,53,0.35)',
+  gold:   '#F5C518',
+  green:  '#1e7a3e',
+  muted:  'rgba(139,168,152,0.7)',
+  white:  '#ffffff',
+  red:    '#ef5350',
 }
 
 const STYLES = `
@@ -39,54 +42,138 @@ const STYLES = `
     70%  { transform: scale(1.08) translateY(-3px); }
     100% { opacity: 1; transform: scale(1) translateY(0); }
   }
-  @keyframes countdownPulse {
-    0%,100% { transform: scale(1); }
-    50%      { transform: scale(1.12); }
-  }
   @keyframes feedSlide {
     from { opacity: 0; transform: translateX(-10px); }
     to   { opacity: 1; transform: translateX(0); }
   }
+  @keyframes modalIn {
+    from { opacity: 0; transform: scale(0.88) translateY(24px); }
+    to   { opacity: 1; transform: scale(1) translateY(0); }
+  }
   .lobby-join-pop { animation: joinPop 0.45s cubic-bezier(0.34,1.56,0.64,1) forwards; }
   .lobby-feed-item-anim { animation: feedSlide 0.3s ease forwards; }
+  .lobby-modal-in { animation: modalIn 0.3s cubic-bezier(0.34,1.56,0.64,1) forwards; }
 `
 
+// ─── Bot prompt modal ───────────────────────────────────────────────────────
+function BotPromptModal({ onYes, onNo }) {
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, zIndex: 999,
+      background: 'rgba(0,0,0,0.72)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      padding: '0 24px',
+    }}>
+      <div
+        className="lobby-modal-in"
+        style={{
+          width: '100%', maxWidth: 340,
+          background: '#0f1f16',
+          border: '1px solid rgba(245,197,24,0.3)',
+          borderRadius: 24,
+          padding: '28px 24px',
+          display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 16,
+          boxShadow: '0 24px 60px rgba(0,0,0,0.7)',
+        }}
+      >
+        <div style={{ fontSize: 44 }}>🤖</div>
+        <div style={{ textAlign: 'center' }}>
+          <div style={{ fontSize: 17, fontWeight: 900, color: C.white, marginBottom: 8 }}>
+            No one joined yet
+          </div>
+          <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.5 }}>
+            It's been a minute. Want to fill the empty seats with bots so you can start playing?
+          </div>
+        </div>
+
+        <div style={{ display: 'flex', gap: 10, width: '100%', marginTop: 4 }}>
+          <button
+            onClick={onNo}
+            style={{
+              flex: 1, padding: '14px 0',
+              borderRadius: 50,
+              border: '1px solid rgba(255,255,255,0.15)',
+              background: 'transparent',
+              color: C.muted, fontWeight: 700, fontSize: 14,
+              cursor: 'pointer',
+            }}
+          >
+            No, keep waiting
+          </button>
+          <button
+            onClick={onYes}
+            style={{
+              flex: 1, padding: '14px 0',
+              borderRadius: 50, border: 'none',
+              background: 'linear-gradient(180deg,#F5C518 0%,#D4A020 100%)',
+              color: '#1a0800', fontWeight: 900, fontSize: 14,
+              cursor: 'pointer',
+              boxShadow: '0 4px 16px rgba(245,197,24,0.35)',
+            }}
+          >
+            Yes, add bots 🤖
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ─── Main lobby ─────────────────────────────────────────────────────────────
 export default function MatchLobbyScreen() {
-  const setScreen  = useGameStore(s => s.setScreen)
-  const lobbyFlow  = useGameStore(s => s.lobbyFlow)
-  const tableSize  = 6
-  const user       = useGameStore(s => s.user)
-  const youName    = user?.name || 'YOU'
+  const setScreen   = useGameStore(s => s.setScreen)
+  const isRoomHost  = useGameStore(s => s.isRoomHost)
+  const user        = useGameStore(s => s.user)
+  const activeRoomCode = useGameStore(s => s.activeRoomCode)
+  const youName     = user?.name || 'YOU'
+  const tableSize   = 6
 
-  const [players,   setPlayers]   = useState(() => [{ id: 'you', name: youName, isBot: false }])
-  const [feed,      setFeed]      = useState([])
-  const [countdown, setCountdown] = useState(lobbyFlow === 'join' ? 10 : null)
-  const lastJoinedIdRef = useRef(null)
+  const [players,        setPlayers]        = useState([{ id: 'you', name: youName, isBot: false }])
+  const [feed,           setFeed]           = useState([])
+  const [showBotPrompt,  setShowBotPrompt]  = useState(false)
+  const [botsAdded,      setBotsAdded]      = useState(false)
 
-  // inject styles
+  const lastJoinedIdRef  = useRef(null)
+  const botTimerRef      = useRef(null)
+  const botFillRef       = useRef(null)
+
+  // inject styles once
   useEffect(() => {
-    const el = document.createElement('style')
-    el.id = 'lobby-styles'
     if (!document.getElementById('lobby-styles')) {
+      const el = document.createElement('style')
+      el.id = 'lobby-styles'
       el.textContent = STYLES
       document.head.appendChild(el)
     }
-    return () => { const s = document.getElementById('lobby-styles'); if(s) s.remove() }
+    return () => { const s = document.getElementById('lobby-styles'); if (s) s.remove() }
   }, [])
 
-  const usedBotNames = useMemo(() => {
-    const s = new Set()
-    players.forEach(p => { if (p.isBot) s.add(p.name.replace(/^Bot\s+/, '')) })
-    return s
-  }, [players])
-
-  // JOIN flow: bots appear gradually
+  // ── 60-second bot-prompt timer (only for host, only if slots still empty) ──
   useEffect(() => {
-    if (lobbyFlow !== 'join') return
-    setPlayers(prev => prev.some(p => p.id === 'you') ? prev : [{ id: 'you', name: youName, isBot: false }])
-    const iv = setInterval(() => {
+    if (!isRoomHost || botsAdded) return
+
+    botTimerRef.current = setTimeout(() => {
+      // Only show if there are still empty slots
       setPlayers(prev => {
-        if (prev.length >= tableSize) return prev
+        if (prev.length < tableSize) setShowBotPrompt(true)
+        return prev
+      })
+    }, BOT_WAIT_MS)
+
+    return () => clearTimeout(botTimerRef.current)
+  }, [isRoomHost, botsAdded, tableSize])
+
+  // ── Animate bots in one-by-one after user says Yes ──
+  const startBotFill = () => {
+    setShowBotPrompt(false)
+    setBotsAdded(true)
+
+    botFillRef.current = setInterval(() => {
+      setPlayers(prev => {
+        if (prev.length >= tableSize) {
+          clearInterval(botFillRef.current)
+          return prev
+        }
         const used = new Set(prev.filter(p => p.isBot).map(p => p.name.replace(/^Bot\s+/, '')))
         const bn = pickBotName(used)
         const id = `bot-${Date.now()}`
@@ -95,45 +182,20 @@ export default function MatchLobbyScreen() {
         return [...prev, { id, name: `Bot ${bn}`, isBot: true }]
       })
     }, 900)
-    return () => clearInterval(iv)
-  }, [lobbyFlow, tableSize, youName])
+  }
 
-  // JOIN countdown
-  useEffect(() => {
-    if (lobbyFlow !== 'join') return
-    if (countdown == null) return
-    if (countdown <= 0) { setScreen('game'); return }
-    const t = setTimeout(() => setCountdown(v => v == null ? v : v - 1), 1000)
-    return () => clearTimeout(t)
-  }, [lobbyFlow, countdown, setScreen])
+  useEffect(() => () => clearInterval(botFillRef.current), [])
 
-  // CREATE flow: bots join gradually
-  useEffect(() => {
-    if (lobbyFlow !== 'create') return
-    const iv = setInterval(() => {
-      setPlayers(prev => {
-        if (prev.length >= tableSize) return prev
-        const used = new Set(prev.filter(p => p.isBot).map(p => p.name.replace(/^Bot\s+/, '')))
-        const bn = pickBotName(used)
-        const id = `bot-${Date.now()}`
-        lastJoinedIdRef.current = id
-        setFeed(f => [`${bn} joined the room`, ...f].slice(0, 6))
-        return [...prev, { id, name: `Bot ${bn}`, isBot: true }]
-      })
-    }, 1000)
-    return () => clearInterval(iv)
-  }, [lobbyFlow, tableSize])
-
+  // ── Derived ──
   const slots = useMemo(() => {
     const list = [...players]
     while (list.length < tableSize) list.push({ id: `empty-${list.length}`, isEmpty: true })
     return list.slice(0, tableSize)
   }, [players, tableSize])
 
-  const canStart   = players.length >= 2
-  const isFull     = players.length >= tableSize
-  const isHost     = lobbyFlow === 'create'
-  const fillPct    = Math.round((players.length / tableSize) * 100)
+  const canStart = players.length >= 2
+  const isFull   = players.length >= tableSize
+  const fillPct  = Math.round((players.length / tableSize) * 100)
 
   return (
     <div style={{
@@ -146,6 +208,14 @@ export default function MatchLobbyScreen() {
       overflow: 'hidden',
       fontFamily: "'Nunito', sans-serif",
     }}>
+
+      {/* Bot prompt modal */}
+      {showBotPrompt && (
+        <BotPromptModal
+          onYes={startBotFill}
+          onNo={() => setShowBotPrompt(false)}
+        />
+      )}
 
       {/* TOP BAR */}
       <div style={{
@@ -170,7 +240,7 @@ export default function MatchLobbyScreen() {
 
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
           <span style={{ fontSize: 13, fontWeight: 800, color: C.white }}>
-            {isHost ? '🏠 Waiting Room' : '🚪 Joining Room'}
+            {isRoomHost ? '🏠 Waiting Room' : '🚪 Joining Room'}
           </span>
           <span style={{ fontSize: 10, color: C.muted }}>101 Pool Rummy · {tableSize}P</span>
         </div>
@@ -224,40 +294,22 @@ export default function MatchLobbyScreen() {
             }}/>
           </div>
 
-          {/* Countdown or waiting */}
-          {countdown != null ? (
+          {/* Waiting indicator */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, color: C.muted, fontSize: 12 }}>
             <div style={{
-              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10,
-            }}>
-              <div style={{
-                width: 48, height: 48, borderRadius: '50%',
-                border: `3px solid ${C.gold}`,
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                fontSize: 20, fontWeight: 900, color: C.gold,
-                animation: 'countdownPulse 1s ease infinite',
-              }}>{countdown}</div>
-              <span style={{ fontSize: 13, color: C.white, fontWeight: 700 }}>
-                Game starting soon…
-              </span>
-            </div>
-          ) : (
-            <div style={{
-              display: 'flex', alignItems: 'center', gap: 10,
-              color: C.muted, fontSize: 12,
-            }}>
-              <div style={{
-                width: 16, height: 16, borderRadius: '50%',
-                border: `2px solid ${C.gold}`,
-                borderTopColor: 'transparent',
-                animation: 'spin 0.9s linear infinite',
-                flexShrink: 0,
-              }}/>
-              {isFull
-                ? <span style={{ color: '#22c55e', fontWeight: 700 }}>All players ready! Start when ready.</span>
-                : <span>Waiting for players to join…</span>
-              }
-            </div>
-          )}
+              width: 16, height: 16, borderRadius: '50%',
+              border: `2px solid ${C.gold}`,
+              borderTopColor: 'transparent',
+              animation: 'spin 0.9s linear infinite',
+              flexShrink: 0,
+            }}/>
+            {isFull
+              ? <span style={{ color: '#22c55e', fontWeight: 700 }}>All players ready!</span>
+              : isRoomHost
+                ? <span>Waiting for players to join…</span>
+                : <span style={{ color: C.gold, fontWeight: 700 }}>Waiting for host to start the game…</span>
+            }
+          </div>
         </div>
 
         {/* PLAYER SLOTS */}
@@ -329,9 +381,7 @@ export default function MatchLobbyScreen() {
               {/* Ready badge */}
               {!p.isEmpty && (
                 <div style={{
-                  background: p.isBot
-                    ? 'rgba(42,92,53,0.3)'
-                    : 'rgba(34,197,94,0.15)',
+                  background: p.isBot ? 'rgba(42,92,53,0.3)' : 'rgba(34,197,94,0.15)',
                   border: `1px solid ${p.isBot ? 'rgba(42,92,53,0.5)' : '#22c55e55'}`,
                   borderRadius: 999, padding: '3px 8px',
                   fontSize: 9, fontWeight: 800,
@@ -378,7 +428,7 @@ export default function MatchLobbyScreen() {
         )}
 
         {/* HOST TIP */}
-        {isHost && (
+        {isRoomHost && (
           <div style={{
             width: '100%',
             background: 'rgba(245,197,24,0.05)',
@@ -390,7 +440,7 @@ export default function MatchLobbyScreen() {
             animation: 'fadeSlideIn 0.5s ease 0.2s both',
           }}>
             <span style={{ fontSize: 18 }}>💡</span>
-            <span>You are the host. Click <b style={{ color: C.gold }}>Start Game</b> when ready — you don't need to wait for all slots to fill.</span>
+            <span>You are the host. Click <b style={{ color: C.gold }}>Start Game</b> when ready.</span>
           </div>
         )}
       </div>
@@ -403,43 +453,45 @@ export default function MatchLobbyScreen() {
         borderTop: `1px solid ${C.border}`,
         display: 'flex', flexDirection: 'column', gap: 8,
       }}>
-        {/* Join flow shows countdown bar */}
-        {!isHost && countdown != null && (
+        {isRoomHost ? (
+          /* ── HOST: can start the game ── */
+          <button
+            disabled={!canStart}
+            onClick={() => {
+              // Emit start_game to server so all players receive game_state
+              if (activeRoomCode) emitStartGame(activeRoomCode)
+              setScreen('game')
+            }}
+            style={{
+              width: '100%', padding: '17px',
+              borderRadius: 50, border: 'none',
+              background: canStart
+                ? 'linear-gradient(180deg,#F5C518 0%,#D4A020 100%)'
+                : 'rgba(255,255,255,0.07)',
+              color: canStart ? '#1a0800' : 'rgba(255,255,255,0.25)',
+              fontWeight: 900, fontSize: 16,
+              cursor: canStart ? 'pointer' : 'not-allowed',
+              boxShadow: canStart ? '0 4px 20px rgba(245,197,24,0.35)' : 'none',
+              transition: 'all 0.2s',
+            }}
+          >
+            {canStart ? '🎮 Start Game' : '⏳ Waiting for players…'}
+          </button>
+        ) : (
+          /* ── JOINER: waiting for host ── */
           <div style={{
-            display: 'flex', alignItems: 'center', gap: 8,
-            marginBottom: 4,
+            width: '100%', padding: '17px',
+            borderRadius: 50,
+            background: 'rgba(255,255,255,0.04)',
+            border: '1px solid rgba(255,255,255,0.1)',
+            color: 'rgba(255,255,255,0.35)',
+            fontWeight: 800, fontSize: 15,
+            textAlign: 'center',
+            userSelect: 'none',
           }}>
-            <span style={{ fontSize: 11, color: C.muted, flexShrink: 0 }}>Auto-start in</span>
-            <div style={{ flex: 1, height: 4, borderRadius: 99, background: 'rgba(255,255,255,0.07)' }}>
-              <div style={{
-                height: '100%', borderRadius: 99,
-                width: `${(countdown / 10) * 100}%`,
-                background: `linear-gradient(90deg,${C.green},${C.gold})`,
-                transition: 'width 1s linear',
-              }}/>
-            </div>
-            <span style={{ fontSize: 12, fontWeight: 800, color: C.gold, flexShrink: 0, minWidth: 24 }}>{countdown}s</span>
+            ⏳ Waiting for host to start the game…
           </div>
         )}
-
-        <button
-          disabled={!canStart}
-          onClick={() => setScreen('game')}
-          style={{
-            width: '100%', padding: '17px',
-            borderRadius: 50, border: 'none',
-            background: canStart
-              ? 'linear-gradient(180deg,#F5C518 0%,#D4A020 100%)'
-              : 'rgba(255,255,255,0.07)',
-            color: canStart ? '#1a0800' : 'rgba(255,255,255,0.25)',
-            fontWeight: 900, fontSize: 16,
-            cursor: canStart ? 'pointer' : 'not-allowed',
-            boxShadow: canStart ? '0 4px 20px rgba(245,197,24,0.35)' : 'none',
-            transition: 'all 0.2s',
-          }}
-        >
-          {canStart ? '🎮 Start Game' : '⏳ Waiting for players…'}
-        </button>
       </div>
     </div>
   )

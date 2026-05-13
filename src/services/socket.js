@@ -12,8 +12,15 @@ class SocketService {
   }
 
   connect() {
-    if (this.socket?.connected) {
-      console.log('✓ Socket already connected')
+    // NEVER create a new socket if one already exists — reuse the same instance
+    // even if it's mid-reconnect. Creating a new socket causes split instances
+    // where emits and listeners land on different objects.
+    if (this.socket) {
+      if (this.socket.connected) {
+        console.log('✓ Socket already connected:', this.socket.id)
+      } else {
+        console.log('✓ Reusing existing socket (reconnecting):', this.socket.id)
+      }
       return this.socket
     }
 
@@ -22,8 +29,10 @@ class SocketService {
       reconnectionDelay: 1000,
       reconnectionDelayMax: 5000,
       reconnectionAttempts: 5,
-      transports: ['websocket', 'polling'],
+      transports: ['websocket'],
     })
+
+    console.log('Socket connecting to:', BACKEND_URL)
 
     this.socket.on('connect', () => {
       this.isConnected = true
@@ -39,6 +48,11 @@ class SocketService {
       console.error('✗ Socket connection error:', error)
     })
 
+    return this.socket
+  }
+
+  // Always returns the single socket instance (null if connect() not yet called)
+  getSocket() {
     return this.socket
   }
 
@@ -158,20 +172,30 @@ const socketService = new SocketService()
 export default socketService
 
 // ──── DEBUG HELPER ────
-// Call once after connect to verify backend round-trip
+// Call once after connect to verify backend round-trip.
+// Uses the actual activeRoomCode from the store — never a hardcoded value.
 export function testJoinRoom() {
   const s = socketService.socket
   if (!s) {
     console.warn('[Socket] testJoinRoom: socket not initialised yet')
     return
   }
-  s.emit('join_room', {
-    roomId: 'test123',
-    playerName: 'player_' + Math.floor(Math.random() * 1000),
+
+  // Import store dynamically to avoid circular deps
+  import('../store').then(({ default: useGameStore }) => {
+    const code = useGameStore.getState().activeRoomCode
+    if (!code) {
+      console.warn('[Socket] testJoinRoom: no activeRoomCode in store — skipping')
+      return
+    }
+    const playerName = useGameStore.getState().user?.name || 'TestPlayer'
+    console.log('[Socket] testJoinRoom: joining room', code)
+    s.emit('join_room', { code, playerName })
+
+    // Guard: only register this listener once
+    s.off('room_update', _onRoomUpdate)
+    s.on('room_update', _onRoomUpdate)
   })
-  // Guard: only register this listener once
-  s.off('room_update', _onRoomUpdate)
-  s.on('room_update', _onRoomUpdate)
 }
 
 function _onRoomUpdate(data) {

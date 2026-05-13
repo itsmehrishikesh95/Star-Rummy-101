@@ -9,7 +9,8 @@ import MatchLobbyScreen from './screens/MatchLobbyScreen'
 import MainMenu from './screens/MainMenu'
 import { Capacitor } from '@capacitor/core'
 import { ScreenOrientation } from '@capacitor/screen-orientation'
-import socketService, { testJoinRoom } from './services/socket'
+import socketService from './services/socket'
+import RoomCodeScreen from './screens/RoomCodeScreen'
 
 function GameLoadingScreen({ message = 'Preparing table...', error = '', onRetry = null }) {
   return (
@@ -201,16 +202,15 @@ export default function App() {
   const setScreen = useGameStore((s) => s.setScreen)
   const isGame = screen === 'game'
 
-  // ──── SOCKET: connect once and run test join ────
+  // ──── SOCKET: connect once on app start ────
   const socketInitRef = useRef(false)
   useEffect(() => {
     if (socketInitRef.current) return
     socketInitRef.current = true
 
     const s = socketService.connect()
-    s.once('connect', () => {
+    s.on('connect', () => {
       console.log('[Socket] Connected:', s.id)
-      testJoinRoom()
     })
   }, [])
 
@@ -273,6 +273,7 @@ export default function App() {
       case 'home':         return <MainMenu />
       case 'splash':       return <SplashScreen />
       case 'otp':          return <Login />
+      case 'room-code':    return <RoomCodeScreen />
       case 'match-lobby':  return <MatchLobbyScreen />
       case 'private-room': return <PrivateRoomScreen />
       case 'join-room':    return <JoinRoomScreen />

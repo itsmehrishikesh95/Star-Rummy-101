@@ -1,33 +1,49 @@
 import React, { useState } from 'react'
 import useGameStore from '../store'
+import socketService from '../services/socket'
 
 const DOT = { backgroundImage:'radial-gradient(#1A5C35 1px, transparent 1px)', backgroundSize:'20px 20px' }
 const GOLD = { background:'linear-gradient(180deg,#F5C518 0%,#D4A020 100%)' }
 const C = { bg:'#0D3320', card:'#1A5C35', dark:'#0A2518', gold:'#F5C518', muted:'#8BA898' }
-const gen = () => Math.floor(1000 + Math.random() * 9000).toString()
+
+// Code is generated ONCE here and immediately saved to the store.
+// Never regenerated on re-render.
+const generateCode = () => Math.floor(1000 + Math.random() * 9000).toString()
 
 export function PrivateRoomScreen() {
-  // ✅ FIX: added setLobbyFlow to destructure
-  const { setScreen, coins, setEntryFee, deductCoins, setLobbyFlow } = useGameStore()
-  const [code] = useState(gen)
+  const { setScreen, coins, setEntryFee, deductCoins, setLobbyFlow, setIsRoomHost, setActiveRoomCode, activeRoomCode } = useGameStore()
   const [fee, setFee] = useState(500)
   const [copied, setCopied] = useState(false)
 
   const PLAYERS = 6
 
-const create = () => {
- if (coins < fee) {
-   alert('Insufficient coins!')
-   return
- }
+  // Generate code once on first render and persist it in the store.
+  // If activeRoomCode is already set (e.g. came back from another screen), reuse it.
+  React.useEffect(() => {
+    if (!activeRoomCode) {
+      const code = generateCode()
+      setActiveRoomCode(code)
+      console.log('[PrivateRoomScreen] HOST CODE:', code)
+    } else {
+      console.log('[PrivateRoomScreen] HOST CODE (existing):', activeRoomCode)
+    }
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
- setEntryFee(fee)
- deductCoins(fee)
+  // Read the single source of truth from the store
+  const code = activeRoomCode || '----'
 
- setLobbyFlow('create')
+  const create = () => {
+    if (coins < fee) {
+      alert('Insufficient coins!')
+      return
+    }
 
- setScreen('match-lobby')
-}
+    setEntryFee(fee)
+    deductCoins(fee)
+    setLobbyFlow('create')
+    setIsRoomHost(true)
+    setScreen('match-lobby')
+  }
 
   const copy = () => {
     navigator.clipboard?.writeText(code).catch(() => {})
@@ -103,29 +119,101 @@ const create = () => {
 }
 
 export function JoinRoomScreen() {
-  const { setScreen, coins, setEntryFee, deductCoins, setLobbyFlow } = useGameStore()
+  const { setScreen, coins, setEntryFee, deductCoins, setLobbyFlow, setIsRoomHost, setActiveRoomCode } = useGameStore()
   const [code, setCode] = useState(['', '', '', ''])
   const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
   const refs = React.useRef([])
 
   const onChange = (val, i) => {
     if (!/^[a-zA-Z0-9]?$/.test(val)) return
     const n = [...code]; n[i] = val.toUpperCase(); setCode(n)
+    setError('')
     if (val && i < 3) refs.current[i + 1]?.focus()
   }
   const onKey = (e, i) => {
     if (e.key === 'Backspace' && !code[i] && i > 0) refs.current[i - 1]?.focus()
   }
+
   const join = () => {
     if (code.some(c => !c)) return
+
+    const entered = code.join('')
+    console.log('VALIDATING:', entered)
     setLoading(true)
-    setTimeout(() => {
+    setError('')
+
+    // Always use the singleton socket — never create a new instance
+    const s = socketService.getSocket()
+    if (!s) {
+      setLoading(false)
+      setError('Not connected to server. Please try again.')
+      return
+    }
+
+    console.log('CLIENT SOCKET ID:', s.id)
+
+    // Remove any stale listener before adding fresh one
+    s.off('room_validated')
+
+    let timeoutId = null
+
+    const handleValidation = ({ code: responseCode, valid }) => {
+      clearTimeout(timeoutId)
+      console.log('[JoinRoomScreen] ROOM VALIDATED RESPONSE:', { code: responseCode, valid })
+
+      if (!valid) {
+        // Retry once after 500ms — host may not have registered yet (race condition)
+        console.log('[JoinRoomScreen] Retrying validation in 500ms...')
+        setTimeout(() => {
+          s.off('room_validated')
+
+          const handleRetry = ({ code: retryCode, valid: retryValid }) => {
+            console.log('[JoinRoomScreen] RETRY VALIDATED RESPONSE:', { code: retryCode, valid: retryValid })
+            if (!retryValid) {
+              setLoading(false)
+              setError('Invalid room code or host not available')
+              return
+            }
+            onValidSuccess()
+          }
+
+          s.emit('validate_room', { code: entered })
+          s.once('room_validated', handleRetry)
+        }, 500)
+        return
+      }
+
+      onValidSuccess()
+    }
+
+    const onValidSuccess = () => {
+      // Save entered code as the active room code so downstream screens are consistent
+      setActiveRoomCode(entered)
+
+      // Join the socket room on the server
+      const user = useGameStore.getState().user
+      const playerName = user?.name || 'Player'
+      console.log('JOINING:', entered)
+      s.emit('join_room', { code: entered, playerName })
+
       setEntryFee(500)
       deductCoins(500)
       setLobbyFlow('join')
-      console.log("Joining fixed 6-player room")
+      setIsRoomHost(false)
       setScreen('match-lobby')
-    }, 1200)
+    }
+
+    // Emit validation request — uses only the entered code, never global state
+    s.emit('validate_room', { code: entered })
+    s.once('room_validated', handleValidation)
+
+    // Timeout fallback — if server doesn't respond in 5s
+    timeoutId = setTimeout(() => {
+      s.off('room_validated', handleValidation)
+      setLoading(false)
+      setError('Invalid room code or host not available')
+    }, 5000)
   }
 
   return (
@@ -162,6 +250,20 @@ export function JoinRoomScreen() {
           </div>
           <p style={{ fontSize:11, color:'rgba(139,168,152,0.4)', marginTop:10 }}>Enter 4 digit code</p>
         </div>
+
+        {/* Validation error */}
+        {error && (
+          <div style={{
+            background: 'rgba(239,83,80,0.1)',
+            border: '1px solid rgba(239,83,80,0.35)',
+            borderRadius: 12,
+            padding: '12px 16px',
+            display: 'flex', alignItems: 'center', gap: 10,
+          }}>
+            <span style={{ fontSize: 18, flexShrink: 0 }}>❌</span>
+            <span style={{ fontSize: 13, color: '#ef5350', fontWeight: 700 }}>{error}</span>
+          </div>
+        )}
 
         {/* Info */}
         <div style={{ background:C.dark, borderRadius:14, padding:'16px', border:'1px solid rgba(42,92,53,0.25)', display:'flex', flexDirection:'column', gap:12 }}>
