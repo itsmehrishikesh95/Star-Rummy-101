@@ -1,6 +1,8 @@
 import { io } from 'socket.io-client'
 
-const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:4000'
+const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'https://star-rummy-101-production.up.railway.app'
+
+console.log('Backend URL:', import.meta.env.VITE_BACKEND_URL)
 
 class SocketService {
   constructor() {
@@ -154,3 +156,24 @@ class SocketService {
 const socketService = new SocketService()
 
 export default socketService
+
+// ──── DEBUG HELPER ────
+// Call once after connect to verify backend round-trip
+export function testJoinRoom() {
+  const s = socketService.socket
+  if (!s) {
+    console.warn('[Socket] testJoinRoom: socket not initialised yet')
+    return
+  }
+  s.emit('join_room', {
+    roomId: 'test123',
+    playerName: 'player_' + Math.floor(Math.random() * 1000),
+  })
+  // Guard: only register this listener once
+  s.off('room_update', _onRoomUpdate)
+  s.on('room_update', _onRoomUpdate)
+}
+
+function _onRoomUpdate(data) {
+  console.log('[Socket] Room Update:', data)
+}

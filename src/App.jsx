@@ -9,6 +9,7 @@ import MatchLobbyScreen from './screens/MatchLobbyScreen'
 import MainMenu from './screens/MainMenu'
 import { Capacitor } from '@capacitor/core'
 import { ScreenOrientation } from '@capacitor/screen-orientation'
+import socketService, { testJoinRoom } from './services/socket'
 
 function GameLoadingScreen({ message = 'Preparing table...', error = '', onRetry = null }) {
   return (
@@ -199,6 +200,19 @@ export default function App() {
   const setUser = useGameStore((s) => s.setUser)
   const setScreen = useGameStore((s) => s.setScreen)
   const isGame = screen === 'game'
+
+  // ──── SOCKET: connect once and run test join ────
+  const socketInitRef = useRef(false)
+  useEffect(() => {
+    if (socketInitRef.current) return
+    socketInitRef.current = true
+
+    const s = socketService.connect()
+    s.once('connect', () => {
+      console.log('[Socket] Connected:', s.id)
+      testJoinRoom()
+    })
+  }, [])
 
   useEffect(() => {
     if (Capacitor.isNativePlatform()) {
