@@ -582,6 +582,13 @@ export default function GameScreen() {
       onGameState: (data) => {
         const myHand = data.hand || []
 
+        // ── Navigate to game screen when server state becomes 'playing' ──
+        // This fires for ALL players (host and joiners) simultaneously.
+        if (data.state === 'playing') {
+          console.log('[Game] Game started via game_state')
+          setScreen('game')
+        }
+
         setPlayerHand(myHand)
         setDiscardPile(data.discardPile || [])
         setDrawPile([])  // server manages the deck; we only show deckSize

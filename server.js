@@ -13,7 +13,7 @@ const io = new Server(httpServer, {
 });
 
 // ── Room store ─────────────────────────────────────────────────────────────
-// { roomCode: { host: socketId, players: [{ id, name }] } }
+// { roomCode: { host: socketId, hostPlayerId: string, players: [{ id, playerId, name }] } }
 const rooms = {};
 
 // ── Game store ─────────────────────────────────────────────────────────────
@@ -68,6 +68,7 @@ function buildSnapshot(game, forSocketId) {
 function broadcastGameState(code) {
   const game = games[code];
   if (!game) return;
+  console.log('📡 Sending game_state to room:', code, '— players:', game.players.length);
   for (const player of game.players) {
     const snapshot = buildSnapshot(game, player.id);
     io.to(player.id).emit('game_state', { code, ...snapshot });
@@ -84,18 +85,19 @@ io.on('connection', (socket) => {
   console.log(`[connect]    socket.id=${socket.id}`);
 
   // ── register_room ──────────────────────────────────────────────────────────
-  socket.on('register_room', ({ code, playerName }) => {
+  socket.on('register_room', ({ code, playerName, playerId }) => {
     if (!code) return;
 
-    console.log('REGISTER RECEIVED:', code);
+    console.log('REGISTER RECEIVED:', code, '| playerId:', playerId);
 
     rooms[code] = {
-      host:    socket.id,
-      players: [{ id: socket.id, name: playerName || 'Host' }],
+      host:         socket.id,
+      hostPlayerId: playerId || socket.id,   // persistent across reconnects
+      players: [{ id: socket.id, playerId: playerId || socket.id, name: playerName || 'Host' }],
     };
 
     socket.join(code);
-    console.log(`[register_room] SERVER SOCKET ID: ${socket.id} code="${code}" name="${playerName}"`);
+    console.log(`[register_room] SERVER SOCKET ID: ${socket.id} code="${code}" name="${playerName}" playerId="${playerId}"`);
     console.log('Rooms after register:', Object.keys(rooms));
 
     socket.emit('room_registered', { code });
@@ -124,15 +126,57 @@ io.on('connection', (socket) => {
     }
 
     console.log('Rooms:', Object.keys(rooms));
+    console.log('ROOM UPDATE SENT:', rooms[code].players.length, 'players in room', code);
     io.to(code).emit('room_update', { code, players: rooms[code].players });
   });
 
   // ── start_game ─────────────────────────────────────────────────────────────
-  socket.on('start_game', ({ code }) => {
+  socket.on('start_game', ({ code, playerId }) => {
+    console.log('🔥 start_game received:', { code, socketId: socket.id, playerId });
+
     const room = rooms[code];
-    if (!room) { socket.emit('game_error', { message: 'Room not found.' }); return; }
-    if (room.host !== socket.id) { socket.emit('game_error', { message: 'Only the host can start.' }); return; }
-    if (room.players.length < 2) { socket.emit('game_error', { message: 'Need at least 2 players.' }); return; }
+    if (!room) {
+      console.log('❌ Room not found:', code);
+      socket.emit('game_error', { message: 'Room not found.' });
+      return;
+    }
+    console.log('HostPlayerId:', room.hostPlayerId);
+
+    // ── Reconnect heal: rebind socket.id if same playerId reconnected ──────
+    const player = room.players.find(p => p.playerId === playerId);
+    if (player && player.id !== socket.id) {
+      console.log('♻️ Rebinding socket after reconnect:', player.id, '→', socket.id);
+      player.id = socket.id;
+      if (room.hostPlayerId === playerId) {
+        room.host = socket.id;
+      }
+    }
+
+    // ── Validate using persistent playerId only — no socket.id fallback ────
+    const callerPlayerId = playerId;
+    if (!callerPlayerId) {
+      console.log('❌ Missing playerId');
+      socket.emit('game_error', { message: 'Missing player identity.' });
+      return;
+    }
+    if (callerPlayerId !== room.hostPlayerId) {
+      console.log('❌ Not host. Expected:', room.hostPlayerId, 'Got:', callerPlayerId);
+      socket.emit('game_error', { message: 'Only the host can start.' });
+      return;
+    }
+    console.log('✅ Host verified via playerId');
+
+    if (room.players.length < 2) {
+      console.log('❌ Not enough players:', room.players.length);
+      socket.emit('game_error', { message: 'Need at least 2 players.' });
+      return;
+    }
+
+    if (games[code]) {
+      console.log('❌ Game already exists for:', code);
+      return;
+    }
+    console.log('Creating game...');
 
     const deck = shuffle(buildDeck());
     const players = room.players;
@@ -156,7 +200,8 @@ io.on('connection', (socket) => {
       state:       'playing',
     };
 
-    console.log(`[start_game] code="${code}" players=${players.length}`);
+    console.log('✅ Game created:', code, '— players:', players.length);
+    console.log('📡 Broadcasting game_state...');
     broadcastGameState(code);
   });
 

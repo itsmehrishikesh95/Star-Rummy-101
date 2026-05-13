@@ -1,6 +1,7 @@
 import React, { useState } from 'react'
 import useGameStore from '../store'
 import socketService from '../services/socket'
+import { getOrCreatePlayerId } from '../services/gameSocket'
 
 const DOT  = { backgroundImage: 'radial-gradient(#1A5C35 1px, transparent 1px)', backgroundSize: '20px 20px' }
 const GOLD = { background: 'linear-gradient(180deg,#F5C518 0%,#D4A020 100%)' }
@@ -66,8 +67,9 @@ export default function RoomCodeScreen() {
 
       // Emit only when socket is fully connected
       const emitRegister = () => {
-        console.log('REGISTER SENT:', code)
-        s.emit('register_room', { code, playerName })
+        const playerId = getOrCreatePlayerId()
+        console.log('REGISTER SENT:', code, '| playerId:', playerId)
+        s.emit('register_room', { code, playerName, playerId })
       }
 
       console.log('[RoomCodeScreen] socket.connected:', s.connected)

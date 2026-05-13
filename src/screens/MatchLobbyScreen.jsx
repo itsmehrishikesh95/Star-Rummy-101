@@ -148,6 +148,39 @@ export default function MatchLobbyScreen() {
     return () => { const s = document.getElementById('lobby-styles'); if (s) s.remove() }
   }, [])
 
+  // ── Subscribe to server room_update — keeps player list in sync ──────────
+  useEffect(() => {
+    const s = socketService.getSocket()
+    if (!s) return
+
+    const handleRoomUpdate = (data) => {
+      console.log('[Lobby] Updating players:', data.players)
+      // Always replace with server data — never append
+      setPlayers(
+        data.players.map(p => ({
+          id:    p.id,
+          name:  p.name,
+          isBot: false,
+        }))
+      )
+      // Add new joiners to the activity feed
+      setFeed(prev => {
+        const existingIds = new Set(players.map(p => p.id))
+        const newOnes = data.players.filter(p => !existingIds.has(p.id))
+        if (!newOnes.length) return prev
+        const msgs = newOnes.map(p => `${p.name} joined the room`)
+        return [...msgs, ...prev].slice(0, 6)
+      })
+    }
+
+    s.on('room_update', handleRoomUpdate)
+    console.log('[Lobby] Subscribed to room_update')
+
+    return () => {
+      s.off('room_update', handleRoomUpdate)
+    }
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
   // ── 60-second bot-prompt timer (only for host, only if slots still empty) ──
   useEffect(() => {
     if (!isRoomHost || botsAdded) return
@@ -458,9 +491,8 @@ export default function MatchLobbyScreen() {
           <button
             disabled={!canStart}
             onClick={() => {
-              // Emit start_game to server so all players receive game_state
+              // Emit start_game to server — game_state (state: 'playing') drives navigation
               if (activeRoomCode) emitStartGame(activeRoomCode)
-              setScreen('game')
             }}
             style={{
               width: '100%', padding: '17px',

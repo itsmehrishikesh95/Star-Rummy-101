@@ -11,27 +11,50 @@
 
 import socketService from './socket'
 
+// ── Persistent player identity ───────────────────────────────────────────────
+// Survives socket reconnects. Generated once per device/browser and stored in
+// localStorage so the server can identify the host even after a new socket.id.
+function getOrCreatePlayerId() {
+  try {
+    let id = localStorage.getItem('star_rummy_player_id')
+    if (!id) {
+      id = 'pid_' + Math.random().toString(36).slice(2) + '_' + Date.now()
+      localStorage.setItem('star_rummy_player_id', id)
+    }
+    return id
+  } catch {
+    // localStorage unavailable (e.g. private browsing edge cases)
+    return 'pid_' + Math.random().toString(36).slice(2)
+  }
+}
+
+export { getOrCreatePlayerId }
+
 // ── Emit helpers ────────────────────────────────────────────────────────────
 
 export function emitStartGame(code) {
   const s = socketService.socket
   if (!s?.connected) return
-  s.emit('start_game', { code })
-  console.log('[gameSocket] emit start_game', { code })
+  // Send persistent playerId so server can verify host even after reconnect
+  const playerId = getOrCreatePlayerId()
+  s.emit('start_game', { code, playerId })
+  console.log('[gameSocket] emit start_game', { code, playerId })
 }
 
 export function emitDrawCard(code) {
   const s = socketService.socket
   if (!s?.connected) return
-  s.emit('draw_card', { code })
-  console.log('[gameSocket] emit draw_card', { code })
+  const playerId = getOrCreatePlayerId()
+  s.emit('draw_card', { code, playerId })
+  console.log('[gameSocket] emit draw_card', { code, playerId })
 }
 
 export function emitDiscardCard(code, cardId) {
   const s = socketService.socket
   if (!s?.connected) return
-  s.emit('discard_card', { code, cardId })
-  console.log('[gameSocket] emit discard_card', { code, cardId })
+  const playerId = getOrCreatePlayerId()
+  s.emit('discard_card', { code, cardId, playerId })
+  console.log('[gameSocket] emit discard_card', { code, cardId, playerId })
 }
 
 // ── Subscribe ────────────────────────────────────────────────────────────────
