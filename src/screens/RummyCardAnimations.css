@@ -1,0 +1,122 @@
+/* src/screens/RummyCardAnimations.css */
+.deal-animate { animation: dealFly 0.5s cubic-bezier(0.18, 0.89, 0.32, 1.28); }
+@keyframes dealFly { 
+  from { transform: translate(0, 50vh) scale(0); opacity: 0; } 
+  to { transform: translate(0, 0) scale(1); opacity: 1; } 
+}
+
+.draw-animate { animation: drawPop 0.4s cubic-bezier(0.18, 0.89, 0.32, 1.28); }
+@keyframes drawPop { 
+  0% { transform: scale(0.5); opacity: 0; } 
+  100% { transform: scale(1); opacity: 1; } 
+}
+
+.discard-animate { animation: discardFly 0.4s ease-in forwards; }
+@keyframes discardFly { 
+  to { transform: translate(0, -30vh) scale(0.5); opacity: 0; } 
+}
+
+.deck-ripple { animation: ripple 0.6s linear; }
+@keyframes ripple { 
+  from { box-shadow: 0 0 0 0 rgba(245,197,24,0.8); } 
+  to { box-shadow: 0 0 0 40px rgba(245,197,24,0); } 
+}
+
+.valid-flash { animation: flashGreen 0.6s ease; }
+@keyframes flashGreen { 
+  0%, 100% { background: rgba(34,197,94,0.1); } 
+  50% { background: rgba(34,197,94,0.6); } 
+}
+
+.invalid-shake { 
+  animation: shakeRed 0.4s ease; 
+  background: rgba(239,83,80,0.2) !important; 
+  border-color: #ef5350 !important; 
+}
+@keyframes shakeRed { 
+  0%, 100% { transform: translateX(0); } 
+  25% { transform: translateX(-6px); } 
+  75% { transform: translateX(6px); } 
+}
+
+.sort-animate { animation: sortShift 0.4s ease both; }
+@keyframes sortShift { 
+  from { transform: translateX(var(--sort-from, -20px)); opacity: 0; } 
+  to { transform: translateX(0); opacity: 1; } 
+}
+
+.sort-transition {
+  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.3s ease;
+}
+
+.drag-lift {
+  transform: translateY(-8px) scale(1.05) !important;
+  box-shadow: 0 20px 40px rgba(0,0,0,0.4) !important;
+  z-index: 100 !important;
+}
+
+.drop-valid {
+  background: rgba(34,197,94,0.15) !important;
+  border-color: rgba(34,197,94,0.6) !important;
+  box-shadow: 0 0 16px rgba(34,197,94,0.3) !important;
+}
+
+.drop-invalid {
+  background: rgba(239,83,80,0.15) !important;
+  border-color: rgba(239,83,80,0.6) !important;
+  animation: shake 0.4s ease;
+}
+
+@keyframes shake {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-4px); }
+  75% { transform: translateX(4px); }
+}
+
+.opponent-deal { animation: opDealFly 0.4s ease-out; }
+@keyframes opDealFly { 
+  from { transform: scale(0); opacity: 0; } 
+  to { transform: scale(1); opacity: 1; } 
+}
+
+.turn-pulse { animation: turnGlow 1.5s infinite alternate; }
+@keyframes turnGlow { 
+  from { box-shadow: 0 0 5px #F5C518; } 
+  to { box-shadow: 0 0 20px #F5C518; } 
+}
+
+.win-spread { animation: winPulse 1s ease-out; }
+@keyframes winPulse { 
+  0%, 100% { transform: scale(1); } 
+  50% { transform: scale(1.1); filter: drop-shadow(0 0 10px #F5C518); } 
+}
+
+.confetti-piece { position: absolute; animation: fall var(--cf-dur) var(--cf-delay) linear infinite; }
+@keyframes fall { 
+  to { transform: translateY(100vh) rotate(720deg); } 
+}
+
+.joker-sparkle::after { 
+  content: ''; position: absolute; inset: 0; 
+  border: none; border-radius: 8px; 
+  animation: sparkle 2s infinite linear; pointer-events: none; 
+}
+@keyframes sparkle { 
+  0%, 100% { opacity: 0.2; } 
+  50% { opacity: 1; box-shadow: 0 0 12px #F5C518 inset; } 
+}
+
+.card-burn { animation: burnUp 0.6s forwards; }
+@keyframes burnUp { 
+  to { transform: translateY(-50px) scale(0); opacity: 0; filter: brightness(2) sepia(1); } 
+}
+
+.card-selectable {
+  cursor: pointer;
+  touch-action: none;
+  transition: transform 0.2s cubic-bezier(0.34,1.56,0.64,1), box-shadow 0.2s ease, filter 0.2s ease;
+}
+.card-selectable.selected {
+  transform: translateY(-20px) !important;
+  box-shadow: 0 10px 20px rgba(0,0,0,0.6);
+}
