@@ -41,12 +41,12 @@ export function emitStartGame(code) {
   console.log('[gameSocket] emit start_game', { code, playerId })
 }
 
-export function emitDrawCard(code) {
+export function emitDrawCard(code, fromDiscard = false) {
   const s = socketService.socket
   if (!s?.connected) return
   const playerId = getOrCreatePlayerId()
-  s.emit('draw_card', { code, playerId })
-  console.log('[gameSocket] emit draw_card', { code, playerId })
+  s.emit('draw_card', { code, playerId, fromDiscard })
+  console.log('[gameSocket] emit draw_card', { code, playerId, fromDiscard })
 }
 
 export function emitDiscardCard(code, cardId) {

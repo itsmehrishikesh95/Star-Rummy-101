@@ -275,7 +275,7 @@ io.on('connection', (socket) => {
   });
 
   // ── draw_card ──────────────────────────────────────────────────────────────
-  socket.on('draw_card', ({ code }) => {
+  socket.on('draw_card', ({ code, fromDiscard }) => {
     const game = games[code];
     if (!game) { socket.emit('game_error', { message: 'Game not found.' }); return; }
 
@@ -285,17 +285,29 @@ io.on('connection', (socket) => {
       return;
     }
 
-    if (game.deck.length === 0) {
-      const top = game.discardPile.pop();
-      game.deck = shuffle(game.discardPile);
-      game.discardPile = top ? [top] : [];
+    let card;
+    if (fromDiscard) {
+      // Draw from open discard pile
+      if (game.discardPile.length === 0) {
+        socket.emit('game_error', { message: 'Discard pile is empty.' });
+        return;
+      }
+      card = game.discardPile.pop();
+    } else {
+      // Draw from closed deck
+      if (game.deck.length === 0) {
+        // Reshuffle discard pile (keep top card)
+        const top = game.discardPile.pop();
+        game.deck = shuffle(game.discardPile);
+        game.discardPile = top ? [top] : [];
+      }
+      card = game.deck.shift();
     }
 
-    const card = game.deck.shift();
     if (!card) { socket.emit('game_error', { message: 'No cards left.' }); return; }
 
     game.hands[socket.id].push(card);
-    console.log(`[draw_card]  socket.id=${socket.id} card=${card.id} code="${code}"`);
+    console.log(`[draw_card]  socket.id=${socket.id} card=${card.id} fromDiscard=${fromDiscard} code="${code}"`);
     broadcastGameState(code);
   });
 

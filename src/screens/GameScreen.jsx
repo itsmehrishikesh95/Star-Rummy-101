@@ -641,8 +641,8 @@ export default function GameScreen() {
         } else if (myTurn && myHand.length === 14) {
           setGameState('discard')
           setHasDrawn(true)
-        } else {
-          // Not my turn — show waiting state (not 'dealing')
+        } else if (!myTurn) {
+          // Not my turn — set to draw (waiting) so UI doesn't block
           setGameState('draw')
           setHasDrawn(false)
         }
@@ -1292,6 +1292,10 @@ export default function GameScreen() {
         // FIX: Don't call showToast during validation - only return result
         return { ok: false, message: 'Already drew a card this turn.' }
       }
+      // In multiplayer, server manages the deck — skip local pile checks
+      if (isMultiplayer) {
+        return { ok: true }
+      }
       if (payload.fromDiscard && discardPile.length === 0) {
         console.log('🚫 DISCARD PILE EMPTY', { action, discardPileLength: discardPile.length })
         // FIX: Don't call showToast during validation - only return result
@@ -1324,8 +1328,8 @@ export default function GameScreen() {
         console.log('DEBUG: invalid discard blocked - no card selected', { action, selectedCard })
         return { ok: false, message: 'Select a card to discard.' }
       }
-      // ADDED: Check if selected card is actually in player's hand
-      if (!playerHand.some(c => c.id === selectedCard.id)) {
+      // In multiplayer, skip hand-check (server validates)
+      if (!isMultiplayer && !playerHand.some(c => c.id === selectedCard.id)) {
         console.log('DEBUG: invalid discard blocked - card not in hand', { action, selectedCard, playerHandLength: playerHand.length })
         return { ok: false, message: 'Selected card is not in your hand.' }
       }
@@ -1561,10 +1565,10 @@ export default function GameScreen() {
 
     // ── MULTIPLAYER: emit to server, wait for game_state ──
     if (isMultiplayer) {
-      emitDrawCard(activeRoomCode)
+      emitDrawCard(activeRoomCode, fromDiscard)
       drawPendingRef.current = true
       // Server will broadcast game_state with updated hand — no local state change
-      setTimeout(() => { drawPendingRef.current = false }, 1000)
+      setTimeout(() => { drawPendingRef.current = false }, 2000)
       return
     }
 
