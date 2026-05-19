@@ -575,23 +575,26 @@ export default function GameScreen() {
 
   // ── MULTIPLAYER BRIDGE ─────────────────────────────────────────────────────
   // When activeRoomCode is present, subscribe to server game_state and sync to local state.
-  // Does NOT run in solo/mock mode (activeRoomCode is null).
+  // Uses the SAME visual pipeline as practice mode (deal animation, turn start).
+  const multiplayerInitDoneRef = useRef(false)
+
   useEffect(() => {
     if (!isMultiplayer) return
     const s = socketService.socket
     if (!s?.connected) {
-      // Socket not connected yet — retry after a short delay
       const retryTimer = setTimeout(() => {
         const sock = socketService.socket
         if (sock?.connected) {
-          sock.emit('request_game_state', { code: activeRoomCode, playerId: '' })
+          import('../services/gameSocket').then(({ getOrCreatePlayerId }) => {
+            sock.emit('request_game_state', { code: activeRoomCode, playerId: getOrCreatePlayerId() })
+          })
         }
       }, 1000)
       return () => clearTimeout(retryTimer)
     }
 
     const mySocketId = s.id
-    console.log('[GameScreen] Multiplayer mode active', { code: activeRoomCode, mySocketId })
+    console.log('[Multiplayer] Mode active', { code: activeRoomCode, mySocketId })
 
     // Convert server suit format (S/H/D/C) to client format (♠/♥/♦/♣)
     const suitToUnicode = { S: '♠', H: '♥', D: '♦', C: '♣' }
@@ -608,21 +611,11 @@ export default function GameScreen() {
       onGameState: (data) => {
         const rawHand = data.hand || []
         const myHand = rawHand.map(convertCard)
-
-        setPlayerHand(myHand)
-        setDiscardPile((data.discardPile || []).map(convertCard))
-        setDrawPile([])  // server manages the deck; we only show deckSize
-        setWildJoker(null) // no wild joker in multiplayer for now
-
-        // Map server player index to local currentTurn (0 = me, 1+ = others)
+        const serverDiscard = (data.discardPile || []).map(convertCard)
         const myIndex = (data.players || []).findIndex(p => p.id === mySocketId)
-        const serverTurnIndex = (data.players || []).findIndex(p => p.id === data.currentTurn)
-        const localTurn = serverTurnIndex === myIndex ? 0 : (serverTurnIndex >= 0 ? serverTurnIndex : 0)
-        setCurrentTurn(localTurn)
-        currentTurnRef.current = localTurn
 
-        // Build opponent player list from server data (everyone except me)
-        const aiData = (data.players || [])
+        // Build opponent list
+        const opponents = (data.players || [])
           .filter(p => p.id !== mySocketId)
           .map((p, i) => ({
             id: i,
@@ -631,9 +624,102 @@ export default function GameScreen() {
             score: 0,
             isEliminated: false,
           }))
-        setAiPlayers(aiData)
 
-        // Derive local game phase from turn and hand size
+        // ─── FIRST game_state: full deal animation pipeline (same as practice) ───
+        if (!multiplayerInitDoneRef.current) {
+          multiplayerInitDoneRef.current = true
+          console.log('[Multiplayer] Seating players')
+
+          // 1. Seat players — set opponents, clear hand, set dealing state
+          setAiPlayers(opponents)
+          setDiscardPile(serverDiscard)
+          setDrawPile([{ id: 'server-deck', rank: '?', suit: '?' }])
+          setWildJoker(null)
+          setPlayerHand([])
+          setDealtCount(0)
+          setGameState('dealing')
+          setCurrentTurn(0)
+          currentTurnRef.current = 0
+          setTurnPhase('idle')
+          isAdvancingTurnRef.current = false
+
+          // Build scoreboard
+          const pName = user?.name || 'You'
+          setScoreboard([
+            { id: 'you', name: pName, score: 0, isEliminated: false, isYou: true },
+            ...opponents.map(op => ({
+              id: `mp-${op.id}`, name: op.name, score: 0, isEliminated: false, isYou: false,
+            })),
+          ])
+          setRoundNumber(1)
+          setWinner(null)
+          setPlayerScore(0)
+
+          // 2. After short delay (DOM stable), trigger deal animation
+          setTimeout(() => {
+            console.log('[Multiplayer] Starting deck animation')
+            const drawBox = drawPileRef.current?.getBoundingClientRect() || { left: window.innerWidth / 2, top: window.innerHeight / 2 }
+            const handBox = handRef.current?.getBoundingClientRect() || { left: window.innerWidth / 2 - 200, top: window.innerHeight - 100, width: 400 }
+
+            const anims = []
+            for (let round = 0; round < myHand.length; round++) {
+              anims.push({
+                id: `deal_mp_${round}`,
+                card: myHand[round],
+                start: { x: drawBox.left, y: drawBox.top },
+                end: { x: handBox.left + (handBox.width / Math.max(myHand.length, 1)) * round, y: handBox.top },
+                faceUp: true,
+                flipMidFlight: true,
+                delay: round * 0.1,
+                duration: 0.4,
+                scaleEnd: 1,
+                width: cardW,
+                height: cardH,
+              })
+            }
+            setLayerAnimations(anims)
+
+            // 3. After deal animation completes, set hand and start turn
+            const totalDealTime = (Math.max(myHand.length - 1, 0) * 0.1 + 0.4 + 0.3) * 1000
+            setTimeout(() => {
+              console.log('[Multiplayer] Dealing cards complete')
+              setPlayerHand(myHand)
+              setDealtCount(13)
+
+              // 4. Determine whose turn and start
+              const serverTurnIndex = (data.players || []).findIndex(p => p.id === data.currentTurn)
+              const localTurn = serverTurnIndex === myIndex ? 0 : (serverTurnIndex >= 0 ? serverTurnIndex : 0)
+              setDealerIndex(localTurn)
+
+              console.log('[Multiplayer] Turn set')
+              turnStartTimeoutRef.current = setTimeout(() => {
+                setCurrentTurn(localTurn)
+                currentTurnRef.current = localTurn
+                setHasDrawn(false)
+                setSelectedCard(null)
+                setSelectedCards([])
+                setGameState('draw')
+                setTurnTimer(30)
+                setPenaltyTimer(10)
+                setTimerPhase('main')
+                console.log('[Multiplayer] Game started — turn:', localTurn)
+              }, 300)
+            }, totalDealTime)
+          }, 300)
+
+          return // Don't process further on first frame
+        }
+
+        // ─── SUBSEQUENT game_state updates: sync state directly ───
+        setPlayerHand(myHand)
+        setDiscardPile(serverDiscard)
+        setAiPlayers(opponents)
+
+        const serverTurnIndex = (data.players || []).findIndex(p => p.id === data.currentTurn)
+        const localTurn = serverTurnIndex === myIndex ? 0 : (serverTurnIndex >= 0 ? serverTurnIndex : 0)
+        setCurrentTurn(localTurn)
+        currentTurnRef.current = localTurn
+
         const myTurn = data.currentTurn === mySocketId
         if (myTurn && myHand.length <= 13) {
           setGameState('draw')
@@ -642,28 +728,21 @@ export default function GameScreen() {
           setGameState('discard')
           setHasDrawn(true)
         } else if (!myTurn) {
-          // Not my turn — set to draw (waiting) so UI doesn't block
           setGameState('draw')
           setHasDrawn(false)
         }
 
-        // Mark dealing as complete
-        setDealtCount(13)
-
-        console.log('[GameScreen] game_state synced', {
-          myTurn,
-          handSize: myHand.length,
-          currentTurn: data.currentTurn,
-          players: data.players?.length,
+        console.log('[Multiplayer] game_state synced', {
+          myTurn, handSize: myHand.length, localTurn,
         })
       },
 
       onGameError: (data) => {
-        console.warn('[Game Error]', data)
+        console.warn('[Multiplayer] Error:', data)
       },
 
       onHostChanged: (data) => {
-        console.log('[GameScreen] host_changed', data)
+        console.log('[Multiplayer] host_changed', data)
       },
 
       onRoomClosed: (data) => {
@@ -671,11 +750,10 @@ export default function GameScreen() {
       },
     })
 
-    // Request current game state in case we missed the broadcast
-    // (GameScreen mounts after navigation, so the first game_state may have fired already)
+    // Request game state resync (in case we missed the initial broadcast)
     import('../services/gameSocket').then(({ getOrCreatePlayerId }) => {
       s.emit('request_game_state', { code: activeRoomCode, playerId: getOrCreatePlayerId() })
-      console.log('[GameScreen] requested game_state resync')
+      console.log('[Multiplayer] requested game_state resync')
     }).catch(() => {})
 
     return cleanup
