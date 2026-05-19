@@ -5,48 +5,71 @@ import {
   DndContext,
   DragOverlay,
   PointerSensor,
+  TouchSensor,
   useDroppable,
   useSensor,
   useSensors,
-  closestCorners,
+  closestCenter,
 } from '@dnd-kit/core'
 import {
   SortableContext,
   useSortable,
   horizontalListSortingStrategy,
-  arrayMove,
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 
-const RANKS = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K']
+import jokerHatImg from '../assets/Joker_hat.png'
 
+const RANKS = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K']
 function asArray(v) { return Array.isArray(v) ? v : [] }
 function clamp(min, v, max) { return Math.min(Math.max(v, min), max) }
 
 // ── Card face: uses new 52_cards_png images ──
 function CardFace({ card, selected = false, style = {}, onClick, width = 72, height = 100 }) {
   if (!card) return null
+  const isJokerCard = card.isWildJoker || card.isJoker
   return (
     <div
       onClick={onClick}
       style={{
         width: '100%', height: '100%',
         borderRadius: 6,
-        boxShadow: selected
-          ? '0 0 0 2.5px #F5C518, 0 6px 18px rgba(0,0,0,0.45)'
-          : '0 4px 12px rgba(0,0,0,0.3)',
+        boxShadow: isJokerCard
+          ? '0 0 0 2px #FFD700, 0 0 8px 2px rgba(255,215,0,0.55), 0 4px 12px rgba(0,0,0,0.3)'
+          : selected
+            ? '0 0 0 2.5px #F5C518, 0 6px 18px rgba(0,0,0,0.45)'
+            : '0 4px 12px rgba(0,0,0,0.3)',
         cursor: onClick ? 'pointer' : 'default',
         userSelect: 'none',
-        overflow: 'hidden',
+        overflow: 'visible',
         flexShrink: 0,
+        position: 'relative',
         ...style,
       }}
     >
-      <img
-        src={getCardImage(card.rank, card.suit)}
-        style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block', borderRadius: 6 }}
-        draggable={false}
-      />
+      <div style={{ width: '100%', height: '100%', borderRadius: 6, overflow: 'hidden' }}>
+        <img
+          src={getCardImage(card.rank, card.suit)}
+          style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block', borderRadius: 6 }}
+          draggable={false}
+        />
+      </div>
+      {isJokerCard && (
+        <img
+          src={jokerHatImg}
+          draggable={false}
+          style={{
+            position: 'absolute',
+            top: -52,
+            left: -40,
+            width: Math.round(width * 0.95),
+            height: 'auto',
+            pointerEvents: 'none',
+            zIndex: 10,
+            filter: 'drop-shadow(0 1px 3px rgba(0,0,0,0.7))',
+          }}
+        />
+      )}
     </div>
   )
 }
@@ -106,38 +129,98 @@ function SortableCard({ card, selected, cardW, cardH, onClick, idx, overlapOffse
   const ts = CSS.Transform.toString({ ...transform, scaleX: transform?.scaleX ?? 1, scaleY: transform?.scaleY ?? 1 })
 
   return (
-    <motion.div
+    <div
       ref={setNodeRef}
+      data-card-id={card.id}
       {...attributes}
       {...listeners}
-      layout
-      whileHover={{ y: -20, scale: 1.07, zIndex: 100, transition: { type: 'spring', stiffness: 420, damping: 22 } }}
       style={{
         width: cardW,
         height: cardH,
         flexShrink: 0,
         position: 'relative',
-        // Overlap: first card has no offset, subsequent cards pull left
         marginLeft: idx === 0 ? 0 : -overlapOffset,
         zIndex: isDragging ? 60 : selected ? 50 : idx + 1,
         opacity: isDragging ? 0.85 : 1,
         transform: ts || undefined,
         transition,
+        touchAction: 'none',   // critical: lets dnd-kit own all touch events
+        userSelect: 'none',
       }}
     >
       <motion.div
-        initial={{ opacity: 1, y: 0, scale: 1 }}
         animate={
-          isDragging ? { opacity: 1, y: -10, scale: 1.06 }
-          : selected ? { opacity: 1, y: -14, scale: 1.03 }
-          : { opacity: 1, y: 0, scale: 1 }
+          isDragging ? { y: -10, scale: 1.06 }
+          : selected ? { y: -18, scale: 1.03 }
+          : { y: 0, scale: 1 }
         }
-        transition={{ duration: 0.32, ease: [0.22, 1, 0.36, 1] }}
+        transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
         style={{ width: '100%', height: '100%', borderRadius: 7 }}
       >
         <CardFace card={card} selected={selected} onClick={onClick} width={cardW} height={cardH} />
       </motion.div>
-    </motion.div>
+    </div>
+  )
+}
+
+// ── Discard drop zone — fixed overlay over the discard pile, visible while dragging ──
+function DiscardDropZone({ discardRef, canDiscard, isDragging: anyDragging }) {
+  const { setNodeRef, isOver } = useDroppable({ id: 'discard-pile' })
+
+  const [rect, setRect] = useState(null)
+  useEffect(() => {
+    if (!discardRef?.current) return
+    const update = () => {
+      const r = discardRef.current?.getBoundingClientRect()
+      if (r) setRect({ top: r.top, left: r.left, width: r.width, height: r.height })
+    }
+    update()
+    window.addEventListener('resize', update)
+    window.addEventListener('scroll', update, true)
+    return () => {
+      window.removeEventListener('resize', update)
+      window.removeEventListener('scroll', update, true)
+    }
+  }, [discardRef, anyDragging])
+
+  if (!rect || !anyDragging || !canDiscard) return null
+
+  const pad = 24
+  return (
+    <>
+      {/* Actual droppable hit area — must have pointer-events so dnd-kit can detect it */}
+      <div
+        ref={setNodeRef}
+        style={{
+          position: 'fixed',
+          top: rect.top - pad,
+          left: rect.left - pad,
+          width: rect.width + pad * 2,
+          height: rect.height + pad * 2,
+          zIndex: 9997,
+          borderRadius: 12,
+          // transparent but pointer-events enabled so dnd-kit collision works
+          background: 'transparent',
+          pointerEvents: 'all',
+        }}
+      />
+      {/* Visual highlight — purely decorative, no pointer events */}
+      <div
+        style={{
+          position: 'fixed',
+          top: rect.top - pad,
+          left: rect.left - pad,
+          width: rect.width + pad * 2,
+          height: rect.height + pad * 2,
+          zIndex: 9998,
+          borderRadius: 12,
+          border: isOver ? '2.5px solid #F5C518' : '2px dashed rgba(245,197,24,0.55)',
+          background: isOver ? 'rgba(245,197,24,0.2)' : 'rgba(245,197,24,0.07)',
+          pointerEvents: 'none',
+          transition: 'all 0.15s ease',
+        }}
+      />
+    </>
   )
 }
 
@@ -147,8 +230,8 @@ function GroupDropZone({ group, groupIndex, cardW, cardH, selectedCardId, select
   const { setNodeRef, isOver } = useDroppable({ id: `group-${groupIndex}`, data: { groupIndex } })
   const ev = evalGroup(safe)
 
-  // Cards within a group overlap — show ~40% of each card
-  const overlapOffset = Math.round(cardW * 0.42)
+  // Cards within a group overlap — show ~50% of each card (enough spacing to tap adjacent cards)
+  const overlapOffset = Math.round(cardW * 0.50)
 
   // Total visual width of the group for the container
   const groupVisualWidth = safe.length > 0
@@ -166,13 +249,13 @@ function GroupDropZone({ group, groupIndex, cardW, cardH, selectedCardId, select
           alignItems: 'flex-end',
           // No gap — overlap is handled by negative marginLeft on cards
           gap: 0,
-          padding: '4px 6px 4px',
+          padding: '28px 6px 4px',  // extra top padding so lifted/selected cards don't clip
           borderRadius: 9,
-          background: isOver ? 'rgba(245,197,24,0.15)' : 'rgba(255,255,255,0.07)',
-          border: `1.5px ${isOver ? 'solid' : 'dashed'} ${isOver ? 'rgba(245,197,24,0.65)' : 'rgba(255,255,255,0.14)'}`,
-          minHeight: cardH + 10,
+          background: isOver ? 'rgba(245,197,24,0.12)' : 'transparent',
+          border: `1.5px ${isOver ? 'solid' : 'dashed'} ${isOver ? 'rgba(245,197,24,0.65)' : 'transparent'}`,
+          minHeight: cardH + 36,
           minWidth: safe.length > 0 ? groupVisualWidth + 12 : cardW + 12,
-          backdropFilter: 'blur(3px)',
+          overflow: 'visible',
         }}
       >
         {safe.length === 0 ? (
@@ -229,6 +312,9 @@ export default function PlayerHand({
   onHandTouchStart,
   onHandTouchMove,
   canInteract = true,
+  canDiscard = false,
+  discardPileRef = null,
+  onDiscard = null,
   viewportWidth = 1200,
   viewportHeight = 800,
 }) {
@@ -284,7 +370,16 @@ export default function PlayerHand({
   const flatHand = useMemo(() => safeGroups.flat().filter(Boolean), [safeGroups])
   const sortableIds = useMemo(() => flatHand.filter(c => c?.id != null).map(c => c.id), [flatHand])
 
-  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 12 } }))
+  const sensors = useSensors(
+    // Mouse: activate after 8px movement
+    useSensor(PointerSensor, {
+      activationConstraint: { distance: 8 },
+    }),
+    // Touch: activate after 200ms hold OR 8px movement — prevents conflict with taps
+    useSensor(TouchSensor, {
+      activationConstraint: { delay: 150, tolerance: 8 },
+    })
+  )
   const activeCard = flatHand.find(c => c.id === activeId)
 
   // Use strict fixed dimensions passed from GameScreen for 100% consistency
@@ -328,7 +423,20 @@ export default function PlayerHand({
   function handleDragEnd({ active, over }) {
     if (!canInteract) { setActiveId(null); return }
     setActiveId(null)
-    if (!over || active.id === over.id) return
+    if (!over) return
+
+    // ── Drop on discard pile → select that card and discard it ──
+    if (over.id === 'discard-pile') {
+      const draggedCard = flatHand.find(c => c.id === active.id)
+      if (draggedCard && canDiscard && onDiscard) {
+        onCardSelect(draggedCard)   // mark it selected visually
+        onDiscard(draggedCard)      // pass card directly so discard doesn't need state to settle
+      }
+      return
+    }
+
+    // ── Drop on another card or group → reorder ──
+    if (active.id === over.id) return
     const srcGi = safeGroups.findIndex(g => g.some(c => c.id === active.id))
     if (srcGi === -1) return
     const srcIdx = safeGroups[srcGi].findIndex(c => c.id === active.id)
@@ -359,10 +467,9 @@ export default function PlayerHand({
         display: 'flex',
         alignItems: 'flex-end',
         gap: 10,
-        padding: '4px 8px 0',
+        padding: '28px 8px 0',
         justifyContent: 'center',
-        overflowX: 'hidden',
-        overflowY: 'visible',
+        overflow: 'visible',
         WebkitOverflowScrolling: 'touch',
         position: 'relative',
       }}
@@ -383,14 +490,21 @@ export default function PlayerHand({
   )
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', paddingBottom: 2, paddingTop: 6, overflow: 'visible' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', paddingBottom: 2, paddingTop: 6, overflow: 'visible', position: 'relative' }}>
       <DndContext
         sensors={sensors}
-        collisionDetection={closestCorners}
+        collisionDetection={closestCenter}
         onDragStart={handleDragStart}
         onDragCancel={handleDragCancel}
         onDragEnd={handleDragEnd}
       >
+        {/* Invisible drop zone over the discard pile — shown while dragging */}
+        <DiscardDropZone
+          discardRef={discardPileRef}
+          canDiscard={canDiscard}
+          isDragging={!!activeId}
+        />
+
         {canInteract && sortableIds.length > 0 ? (
           <SortableContext items={sortableIds} strategy={horizontalListSortingStrategy}>
             {handContent}

@@ -1,6 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import useGameStore from '../store'
-import LobbyPlayerSlot from '../components/LobbyPlayerSlot'
 import socketService from '../services/socket'
 import { emitStartGame } from '../services/gameSocket'
 
@@ -121,10 +120,11 @@ function BotPromptModal({ onYes, onNo }) {
 
 // ─── Main lobby ─────────────────────────────────────────────────────────────
 export default function MatchLobbyScreen() {
-  const setScreen   = useGameStore(s => s.setScreen)
-  const isRoomHost  = useGameStore(s => s.isRoomHost)
-  const user        = useGameStore(s => s.user)
+  const setScreen      = useGameStore(s => s.setScreen)
+  const isRoomHost     = useGameStore(s => s.isRoomHost)
+  const user           = useGameStore(s => s.user)
   const activeRoomCode = useGameStore(s => s.activeRoomCode)
+  const setActiveRoomCode = useGameStore(s => s.setActiveRoomCode)
   const youName     = user?.name || 'YOU'
   const tableSize   = 6
 
@@ -133,6 +133,8 @@ export default function MatchLobbyScreen() {
   const [showBotPrompt,  setShowBotPrompt]  = useState(false)
   const [botsAdded,      setBotsAdded]      = useState(false)
   const [gameError,      setGameError]      = useState('')
+  const [countdown,      setCountdown]      = useState(null) // null = no countdown, number = seconds left
+  const [gameStarting,   setGameStarting]   = useState(false)
 
   const lastJoinedIdRef  = useRef(null)
   const botTimerRef      = useRef(null)
@@ -177,6 +179,15 @@ export default function MatchLobbyScreen() {
     s.on('room_update', handleRoomUpdate)
     console.log('[Lobby] Subscribed to room_update')
 
+    // ── On mount: if joiner, re-emit join_room to ensure server has us ──
+    // If host, the register_room was already emitted from RoomCodeScreen
+    if (!isRoomHost && activeRoomCode) {
+      const state = useGameStore.getState()
+      const playerName = state.user?.name || state.profileName || 'Player'
+      s.emit('join_room', { code: activeRoomCode, playerName })
+      console.log('[Lobby] join_room emitted on mount:', activeRoomCode)
+    }
+
     // ── Listen for game_error so host sees why start failed ──
     const handleGameError = (data) => {
       console.warn('[Lobby] game_error:', data)
@@ -185,10 +196,15 @@ export default function MatchLobbyScreen() {
     }
     s.on('game_error', handleGameError)
 
+    // ── Listen for game_starting — countdown before game begins ──
+    const handleGameStarting = (data) => {
+      console.log('[Lobby] game_starting:', data)
+      setGameStarting(true)
+      setCountdown(data.countdown || 10)
+    }
+    s.on('game_starting', handleGameStarting)
+
     // ── Listen for game_state — navigate ALL players when game starts ──────
-    // game_state with state:'playing' is the single source of truth for start.
-    // We must listen here (in lobby) because GameScreen isn't mounted yet
-    // when the server sends the first game_state after start_game.
     const handleGameState = (data) => {
       if (data.state === 'playing') {
         console.log('[Lobby] game_state received with state:playing — navigating to game')
@@ -200,6 +216,7 @@ export default function MatchLobbyScreen() {
     return () => {
       s.off('room_update', handleRoomUpdate)
       s.off('game_error', handleGameError)
+      s.off('game_starting', handleGameStarting)
       s.off('game_state', handleGameState)
     }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
@@ -241,6 +258,21 @@ export default function MatchLobbyScreen() {
   }
 
   useEffect(() => () => clearInterval(botFillRef.current), [])
+
+  // ── Countdown timer — ticks down from 10 to 0, then navigates ──
+  useEffect(() => {
+    if (countdown === null || countdown <= 0) return
+    const timer = setInterval(() => {
+      setCountdown(prev => {
+        if (prev <= 1) {
+          clearInterval(timer)
+          return 0
+        }
+        return prev - 1
+      })
+    }, 1000)
+    return () => clearInterval(timer)
+  }, [countdown])
 
   // ── Derived ──
   const slots = useMemo(() => {
@@ -525,39 +557,51 @@ export default function MatchLobbyScreen() {
         {isRoomHost ? (
           /* ── HOST: can start the game ── */
           <button
-            disabled={!canStart}
+            disabled={!canStart || gameStarting}
             onClick={() => {
-              // Emit start_game to server — game_state (state: 'playing') drives navigation
-              if (activeRoomCode) emitStartGame(activeRoomCode)
+              if (!activeRoomCode) {
+                // No server room — fallback to solo mode
+                setActiveRoomCode(null)
+                setScreen('game')
+                return
+              }
+              // Emit start_game to server — triggers countdown for all players
+              emitStartGame(activeRoomCode)
+              setGameStarting(true)
+              setCountdown(10)
             }}
             style={{
               width: '100%', padding: '17px',
               borderRadius: 50, border: 'none',
-              background: canStart
+              background: canStart && !gameStarting
                 ? 'linear-gradient(180deg,#F5C518 0%,#D4A020 100%)'
                 : 'rgba(255,255,255,0.07)',
-              color: canStart ? '#1a0800' : 'rgba(255,255,255,0.25)',
+              color: canStart && !gameStarting ? '#1a0800' : 'rgba(255,255,255,0.25)',
               fontWeight: 900, fontSize: 16,
-              cursor: canStart ? 'pointer' : 'not-allowed',
-              boxShadow: canStart ? '0 4px 20px rgba(245,197,24,0.35)' : 'none',
+              cursor: canStart && !gameStarting ? 'pointer' : 'not-allowed',
+              boxShadow: canStart && !gameStarting ? '0 4px 20px rgba(245,197,24,0.35)' : 'none',
               transition: 'all 0.2s',
             }}
           >
-            {canStart ? '🎮 Start Game' : '⏳ Waiting for players…'}
+            {gameStarting
+              ? `⏳ Starting in ${countdown}s...`
+              : canStart ? '🎮 Start Game' : '⏳ Waiting for players…'}
           </button>
         ) : (
-          /* ── JOINER: waiting for host ── */
+          /* ── JOINER: waiting for host or countdown ── */
           <div style={{
             width: '100%', padding: '17px',
             borderRadius: 50,
-            background: 'rgba(255,255,255,0.04)',
-            border: '1px solid rgba(255,255,255,0.1)',
-            color: 'rgba(255,255,255,0.35)',
+            background: gameStarting ? 'rgba(245,197,24,0.12)' : 'rgba(255,255,255,0.04)',
+            border: gameStarting ? '1px solid rgba(245,197,24,0.4)' : '1px solid rgba(255,255,255,0.1)',
+            color: gameStarting ? C.gold : 'rgba(255,255,255,0.35)',
             fontWeight: 800, fontSize: 15,
             textAlign: 'center',
             userSelect: 'none',
           }}>
-            ⏳ Waiting for host to start the game…
+            {gameStarting
+              ? `🎮 Game starting in ${countdown}s...`
+              : '⏳ Waiting for host to start the game…'}
           </div>
         )}
       </div>

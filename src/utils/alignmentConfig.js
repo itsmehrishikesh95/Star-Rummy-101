@@ -23,8 +23,8 @@ export function calculateAlignment(viewportWidth, viewportHeight, isLandscape) {
   const scoreboardWidth = hasSideScoreboard ? Math.min(280, Math.max(220, viewportWidth * 0.24)) : 0
   const effectiveHandViewport = Math.max(240, viewportWidth - contentPadding * 2 - scoreboardWidth)
   const rawCardWidth = (effectiveHandViewport / targetCards) * 1.55
-  const minCard = isIphoneSE ? 61 : isStandardPhone ? 67 : isFoldOrTablet ? 73 : 85
-  const maxCard = isIphoneSE ? 73 : isShortLandscape ? 79 : isStandardPhone ? 81 : isFoldOrTablet ? 85 : 85
+  const minCard = isIphoneSE ? 55 : isStandardPhone ? 60 : isFoldOrTablet ? 62 : 75
+  const maxCard = isIphoneSE ? 65 : isShortLandscape ? 68 : isStandardPhone ? 70 : isFoldOrTablet ? 74 : 75
   
   function clamp(min, value, max) {
     return Math.min(Math.max(value, min), max)
@@ -37,7 +37,7 @@ export function calculateAlignment(viewportWidth, viewportHeight, isLandscape) {
   // BOTTOM POSITIONING & SPACING
   // ─────────────────────────────────────────────────────────────
   const actionBarHeight = tableCompact ? 98 : 108
-  const handBottom = actionBarHeight + (isShortLandscape ? 30 : 18)
+  const handBottom = actionBarHeight + (isShortLandscape ? 44 : 38)
 
   // ─────────────────────────────────────────────────────────────
   // CONTROL SIZING
@@ -47,7 +47,7 @@ export function calculateAlignment(viewportWidth, viewportHeight, isLandscape) {
   const avatarSize = compactMode ? 42 : smallMode ? 52 : 64
   const buttonHeight = compactMode ? 38 : 42
   const buttonMinWidth = compactMode ? 72 : 82
-  const buttonPadding = compactMode ? '0 14px' : '0 18px'
+  const buttonPadding = compactMode ? '0 12px' : '0 16px'
 
   // ─────────────────────────────────────────────────────────────
   // TABLE SIZING
@@ -58,7 +58,7 @@ export function calculateAlignment(viewportWidth, viewportHeight, isLandscape) {
   // ─────────────────────────────────────────────────────────────
   // CENTER AREA POSITIONING
   // ─────────────────────────────────────────────────────────────
-  const centerAreaTop = isShortLandscape ? '42%' : '46%'
+  const centerAreaTop = isShortLandscape ? '60%' : '62%'
 
   // ─────────────────────────────────────────────────────────────
   // AI PLAYER POSITIONING (Responsive)
@@ -99,27 +99,32 @@ export function calculateAlignment(viewportWidth, viewportHeight, isLandscape) {
     if (tableSize === 6) {
       return [
         {
-          top: '50%',
+          // Priya — left side
+          top: '72%',
           left: sideOffset,
           transform: 'translateY(-50%)',
         },
         {
-          top: topPercentage,
+          // Rahul — top-left
+          top: isShortLandscape ? '52%' : '62%',
           left: '18%',
           transform: 'none',
         },
         {
-          top: isShortLandscape ? '48%' : '52%',
+          // Sneha — top-center
+          top: isShortLandscape ? '58%' : '72%',
           left: '50%',
           transform: 'translateX(-50%)',
         },
         {
-          top: topPercentage,
+          // Amit — top-right
+          top: isShortLandscape ? '52%' : '62%',
           right: '18%',
           transform: 'none',
         },
         {
-          top: '50%',
+          // Kavya — right side
+          top: '72%',
           right: sideOffset,
           transform: 'translateY(-50%)',
         },
@@ -168,7 +173,7 @@ export function calculateAlignment(viewportWidth, viewportHeight, isLandscape) {
     getAIPositions,
 
     // AI seat sizing (used by PlayersAroundTable)
-    aiAvatarSz: tableCompact ? 46 : 56,
+    aiAvatarSz: tableCompact ? 44 : 52,
     aiCardW: tableCompact ? 28 : 36,
     aiCardH: tableCompact ? 38 : 50,
   }

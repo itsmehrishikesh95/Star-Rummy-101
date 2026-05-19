@@ -202,8 +202,8 @@ export default function Login() {
 
   return (
     <div style={{
-      width: '100vw',
-      height: '100vh',
+      width: '100%',
+      minHeight: '100dvh',
       background: 'linear-gradient(135deg, #0a1a0f 0%, #1a2a1f 50%, #0a1a0f 100%)',
       backgroundImage: `
         radial-gradient(circle at 20% 80%, rgba(245,197,24,0.1) 0%, transparent 50%),
@@ -213,61 +213,69 @@ export default function Login() {
       display: 'flex',
       flexDirection: 'column',
       alignItems: 'center',
-      justifyContent: 'center',
-      padding: '20px',
+      justifyContent: 'flex-start',
+      padding: '0 16px 32px',
       fontFamily: "'Nunito', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
       position: 'relative',
-      overflow: 'hidden'
+      overflowY: 'auto',
+      overflowX: 'hidden',
+      boxSizing: 'border-box',
     }}>
       {/* Background Pattern Overlay */}
       <div style={{
-        position: 'absolute',
+        position: 'fixed',
         top: 0,
         left: 0,
         right: 0,
         bottom: 0,
         backgroundImage: 'radial-gradient(rgba(245,197,24,0.03) 1px, transparent 1px)',
         backgroundSize: '24px 24px',
-        opacity: 0.3
+        opacity: 0.3,
+        pointerEvents: 'none',
+        zIndex: 0,
       }} />
 
-      {/* Logo/Title Section */}
+      {/* Logo/Title Section — compact when OTP is shown */}
       <div style={{
         textAlign: 'center',
-        marginBottom: '32px',
+        marginTop: otpSent ? 24 : 48,
+        marginBottom: otpSent ? 16 : 28,
         zIndex: 2,
-        position: 'relative'
+        position: 'relative',
+        transition: 'all 0.3s ease',
       }}>
         <div style={{
-          fontSize: '48px',
+          fontSize: otpSent ? '36px' : '48px',
           fontWeight: 900,
           background: 'linear-gradient(45deg, #F5C518, #FFD700, #F5C518)',
           backgroundClip: 'text',
           WebkitBackgroundClip: 'text',
           WebkitTextFillColor: 'transparent',
-          marginBottom: '8px',
-          textShadow: '0 2px 4px rgba(0,0,0,0.3)',
-          letterSpacing: '-2px'
+          marginBottom: '6px',
+          letterSpacing: '-2px',
+          transition: 'font-size 0.3s ease',
         }}>
           101
         </div>
         <div style={{
-          fontSize: '14px',
+          fontSize: '13px',
           fontWeight: 800,
           color: 'rgba(245,197,24,0.8)',
           letterSpacing: '3px',
           textTransform: 'uppercase',
-          marginBottom: '4px'
+          marginBottom: '3px',
         }}>
           Pool Rummy
         </div>
-        <div style={{
-          fontSize: '13px',
-          color: 'rgba(139,168,152,0.7)',
-          fontWeight: 600
-        }}>
-          Secure mobile login to continue
-        </div>
+        {!otpSent && (
+          <div style={{
+            fontSize: '12px',
+            color: 'rgba(139,168,152,0.7)',
+            fontWeight: 600,
+          }}>
+            Secure mobile login to continue
+          </div>
+        )}
       </div>
 
       {/* Main Login Panel */}
@@ -278,24 +286,25 @@ export default function Login() {
         backdropFilter: 'blur(20px)',
         border: '1px solid rgba(245,197,24,0.2)',
         borderRadius: '24px',
-        padding: '32px 24px',
+        padding: '24px 20px',
         boxShadow: `
           0 20px 40px rgba(0,0,0,0.4),
           0 0 60px rgba(245,197,24,0.1),
           inset 0 1px 0 rgba(255,255,255,0.1)
         `,
         zIndex: 2,
-        position: 'relative'
+        position: 'relative',
+        boxSizing: 'border-box',
       }}>
         {/* Phone Input Section */}
-        <div style={{ marginBottom: '24px' }}>
+        <div style={{ marginBottom: '18px' }}>
           <label style={{
             display: 'block',
-            fontSize: '16px',
+            fontSize: '15px',
             fontWeight: 700,
             color: '#F5C518',
-            marginBottom: '12px',
-            textAlign: 'center'
+            marginBottom: '10px',
+            textAlign: 'center',
           }}>
             📱 Enter Mobile Number
           </label>
@@ -304,23 +313,23 @@ export default function Login() {
             display: 'flex',
             alignItems: 'center',
             border: '2px solid rgba(245,197,24,0.3)',
-            borderRadius: '16px',
+            borderRadius: '14px',
             background: 'rgba(0,0,0,0.3)',
             overflow: 'hidden',
-            transition: 'all 0.3s ease',
-            boxShadow: '0 4px 12px rgba(0,0,0,0.2)'
+            boxShadow: '0 4px 12px rgba(0,0,0,0.2)',
           }}>
             {/* Country Code */}
             <div style={{
-              padding: '16px 18px',
+              padding: '14px 14px',
               background: 'rgba(245,197,24,0.15)',
               borderRight: '1px solid rgba(245,197,24,0.3)',
               color: '#F5C518',
               fontWeight: 800,
-              fontSize: '16px',
+              fontSize: '15px',
               display: 'flex',
               alignItems: 'center',
-              gap: '6px'
+              gap: '5px',
+              flexShrink: 0,
             }}>
               🇮🇳 +91
             </div>
@@ -336,15 +345,16 @@ export default function Login() {
               className="login-input"
               style={{
                 flex: 1,
-                padding: '16px 18px',
+                padding: '14px 14px',
                 background: 'transparent',
                 border: 'none',
                 outline: 'none',
                 color: 'white',
-                fontSize: '18px',
+                fontSize: '17px',
                 fontWeight: 700,
                 letterSpacing: '1px',
-                fontFamily: 'monospace'
+                fontFamily: 'monospace',
+                minWidth: 0,
               }}
             />
           </div>
@@ -357,7 +367,7 @@ export default function Login() {
           className="login-button"
           style={{
             width: '100%',
-            padding: '18px',
+            padding: '15px',
             border: 'none',
             borderRadius: '50px',
             background: loading || phone.length !== 10
@@ -365,28 +375,27 @@ export default function Login() {
               : 'linear-gradient(135deg, #F5C518, #D4A020)',
             color: loading || phone.length !== 10 ? 'rgba(26,8,0,0.5)' : '#1a0800',
             fontWeight: 900,
-            fontSize: '16px',
+            fontSize: '15px',
             cursor: loading || phone.length !== 10 ? 'not-allowed' : 'pointer',
             boxShadow: loading || phone.length !== 10
               ? '0 4px 12px rgba(0,0,0,0.2)'
-              : '0 8px 24px rgba(245,197,24,0.4), 0 0 40px rgba(245,197,24,0.2)',
+              : '0 8px 24px rgba(245,197,24,0.4)',
             transition: 'all 0.3s ease',
-            marginBottom: '16px',
+            marginBottom: '12px',
             textTransform: 'uppercase',
             letterSpacing: '1px',
-            position: 'relative',
-            overflow: 'hidden'
+            touchAction: 'manipulation',
           }}
         >
           {loading ? (
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}>
               <div style={{
-                width: '16px',
-                height: '16px',
+                width: '14px',
+                height: '14px',
                 border: '2px solid rgba(26,8,0,0.3)',
                 borderTopColor: '#1a0800',
                 borderRadius: '50%',
-                animation: 'spin 1s linear infinite'
+                animation: 'spin 1s linear infinite',
               }} />
               Sending OTP...
             </div>
@@ -402,20 +411,21 @@ export default function Login() {
           className="login-button"
           style={{
             width: '100%',
-            padding: '16px',
+            padding: '14px',
             border: '2px solid rgba(245,197,24,0.4)',
             borderRadius: '50px',
             background: 'transparent',
             color: '#F5C518',
             fontWeight: 800,
-            fontSize: '15px',
+            fontSize: '14px',
             cursor: loading ? 'not-allowed' : 'pointer',
             boxShadow: '0 4px 16px rgba(245,197,24,0.2)',
             transition: 'all 0.3s ease',
-            marginBottom: '20px',
+            marginBottom: '16px',
             textTransform: 'uppercase',
             letterSpacing: '0.8px',
-            opacity: loading ? 0.6 : 1
+            opacity: loading ? 0.6 : 1,
+            touchAction: 'manipulation',
           }}
         >
           🎭 Play as Guest
@@ -424,17 +434,16 @@ export default function Login() {
         {/* OTP Input Section (shown after OTP sent) */}
         {otpSent && (
           <div style={{
-            marginTop: '24px',
-            paddingTop: '24px',
-            borderTop: '1px solid rgba(245,197,24,0.2)'
+            paddingTop: '18px',
+            borderTop: '1px solid rgba(245,197,24,0.2)',
           }}>
             <label style={{
               display: 'block',
-              fontSize: '16px',
+              fontSize: '15px',
               fontWeight: 700,
               color: '#F5C518',
-              marginBottom: '12px',
-              textAlign: 'center'
+              marginBottom: '10px',
+              textAlign: 'center',
             }}>
               🔐 Enter OTP
             </label>
@@ -450,9 +459,9 @@ export default function Login() {
               className="login-input"
               style={{
                 width: '100%',
-                padding: '16px 18px',
+                padding: '14px 18px',
                 border: '2px solid rgba(245,197,24,0.3)',
-                borderRadius: '16px',
+                borderRadius: '14px',
                 background: 'rgba(0,0,0,0.3)',
                 color: 'white',
                 fontSize: '20px',
@@ -461,7 +470,8 @@ export default function Login() {
                 letterSpacing: '8px',
                 outline: 'none',
                 transition: 'all 0.3s ease',
-                fontFamily: 'monospace'
+                fontFamily: 'monospace',
+                boxSizing: 'border-box',
               }}
             />
 
@@ -472,7 +482,7 @@ export default function Login() {
               className="login-button"
               style={{
                 width: '100%',
-                padding: '18px',
+                padding: '15px',
                 border: 'none',
                 borderRadius: '50px',
                 background: loading || otp.length < 4
@@ -480,15 +490,16 @@ export default function Login() {
                   : 'linear-gradient(135deg, #F5C518, #D4A020)',
                 color: loading || otp.length < 4 ? 'rgba(26,8,0,0.5)' : '#1a0800',
                 fontWeight: 900,
-                fontSize: '16px',
+                fontSize: '15px',
                 cursor: loading || otp.length < 4 ? 'not-allowed' : 'pointer',
                 boxShadow: loading || otp.length < 4
                   ? '0 4px 12px rgba(0,0,0,0.2)'
-                  : '0 8px 24px rgba(245,197,24,0.4), 0 0 40px rgba(245,197,24,0.2)',
+                  : '0 8px 24px rgba(245,197,24,0.4)',
                 transition: 'all 0.3s ease',
-                marginTop: '16px',
+                marginTop: '14px',
                 textTransform: 'uppercase',
-                letterSpacing: '1px'
+                letterSpacing: '1px',
+                touchAction: 'manipulation',
               }}
             >
               {loading ? 'Verifying...' : 'Verify & Play'}
@@ -498,10 +509,10 @@ export default function Login() {
             {secondsLeft > 0 && (
               <div style={{
                 textAlign: 'center',
-                marginTop: '12px',
-                fontSize: '14px',
+                marginTop: '10px',
+                fontSize: '13px',
                 color: 'rgba(139,168,152,0.7)',
-                fontWeight: 600
+                fontWeight: 600,
               }}>
                 Resend OTP in <span style={{ color: '#F5C518' }}>{secondsLeft}s</span>
               </div>
@@ -514,18 +525,19 @@ export default function Login() {
                 disabled={loading}
                 style={{
                   width: '100%',
-                  padding: '12px',
+                  padding: '11px',
                   border: '1px solid rgba(245,197,24,0.4)',
                   borderRadius: '25px',
                   background: 'transparent',
                   color: '#F5C518',
                   fontWeight: 700,
-                  fontSize: '14px',
+                  fontSize: '13px',
                   cursor: loading ? 'not-allowed' : 'pointer',
                   transition: 'all 0.3s ease',
-                  marginTop: '12px',
+                  marginTop: '10px',
                   textTransform: 'uppercase',
-                  letterSpacing: '0.5px'
+                  letterSpacing: '0.5px',
+                  touchAction: 'manipulation',
                 }}
               >
                 Resend OTP
@@ -537,15 +549,15 @@ export default function Login() {
         {/* Error Message */}
         {error && (
           <div style={{
-            marginTop: '16px',
-            padding: '12px 16px',
+            marginTop: '14px',
+            padding: '10px 14px',
             borderRadius: '12px',
             background: 'rgba(239,83,80,0.1)',
             border: '1px solid rgba(239,83,80,0.3)',
             color: '#ef5350',
-            fontSize: '14px',
+            fontSize: '13px',
             fontWeight: 600,
-            textAlign: 'center'
+            textAlign: 'center',
           }}>
             {error}
           </div>
@@ -554,15 +566,15 @@ export default function Login() {
         {/* Success Message */}
         {info && (
           <div style={{
-            marginTop: '16px',
-            padding: '12px 16px',
+            marginTop: '14px',
+            padding: '10px 14px',
             borderRadius: '12px',
             background: 'rgba(76,175,80,0.1)',
             border: '1px solid rgba(76,175,80,0.3)',
             color: '#4caf50',
-            fontSize: '14px',
+            fontSize: '13px',
             fontWeight: 600,
-            textAlign: 'center'
+            textAlign: 'center',
           }}>
             {info}
           </div>
@@ -570,11 +582,11 @@ export default function Login() {
 
         {/* Terms & Privacy */}
         <div style={{
-          marginTop: '20px',
-          fontSize: '12px',
+          marginTop: '16px',
+          fontSize: '11px',
           color: 'rgba(139,168,152,0.6)',
           textAlign: 'center',
-          lineHeight: '1.4'
+          lineHeight: '1.5',
         }}>
           By continuing you agree to our{' '}
           <span style={{ color: '#F5C518', cursor: 'pointer' }}>Terms</span> &{' '}
@@ -583,7 +595,7 @@ export default function Login() {
       </div>
 
       {/* 🔥 REQUIRED - Firebase reCAPTCHA container */}
-      <div id="recaptcha-container" style={{ position: 'absolute', bottom: '10px', opacity: 0.1 }}></div>
+      <div id="recaptcha-container" style={{ marginTop: 12, opacity: 0.5 }}></div>
 
       {/* CSS Animations */}
       <style dangerouslySetInnerHTML={{
@@ -595,7 +607,6 @@ export default function Login() {
 
           .login-button:hover:not(:disabled) {
             transform: translateY(-2px);
-            box-shadow: 0 12px 32px rgba(245,197,24,0.5), 0 0 60px rgba(245,197,24,0.3) !important;
           }
 
           .login-button:active:not(:disabled) {

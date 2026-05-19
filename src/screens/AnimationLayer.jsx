@@ -3,7 +3,8 @@ import { getCardImage } from '../utils/cardImage'
 import { motion, AnimatePresence } from 'framer-motion'
 import { createPortal } from 'react-dom'
 
-import cardBackImg from '../assets/card-back.png'
+import cardBackImg from '../assets/Star_Rummy_card.png'
+import jokerHatImg from '../assets/Joker_hat.png'
 
 // Reusing CardFace and CardBack from other components for consistency
 function CardBack() {
@@ -22,8 +23,9 @@ function CardBack() {
   )
 }
 
-function CardFace({ card, selected = false, style = {}, onClick }) {
+function CardFace({ card, selected = false, style = {}, onClick, width = 72 }) {
   if (!card) return null
+  const isJokerCard = card.isWildJoker || card.isJoker
 
   return (
     <div
@@ -34,23 +36,42 @@ function CardFace({ card, selected = false, style = {}, onClick }) {
         borderRadius: 8,
         background: '#fff',
         border: 'none',
-        boxShadow: selected
-          ? '0 0 14px rgba(245,197,24,0.7), 0 8px 20px rgba(0,0,0,0.5)'
-          : '0 6px 16px rgba(0,0,0,0.55)',
+        boxShadow: isJokerCard
+          ? '0 0 0 2px #FFD700, 0 0 8px 2px rgba(255,215,0,0.55), 0 6px 16px rgba(0,0,0,0.55)'
+          : selected
+            ? '0 0 14px rgba(245,197,24,0.7), 0 8px 20px rgba(0,0,0,0.5)'
+            : '0 6px 16px rgba(0,0,0,0.55)',
         cursor: onClick ? 'pointer' : 'default',
         position: 'relative',
         userSelect: 'none',
-        overflow: 'hidden',
+        overflow: 'visible',
         ...style,
       }}
     >
-      <img src={getCardImage(card.rank, card.suit)} style={{
-        width: '100%', 
-        height: '100%', 
-        objectFit: 'contain',
-        borderRadius: '6px',
-        boxShadow: '0 2px 6px rgba(0,0,0,0.5)'
-      }} />
+      <div style={{ width: '100%', height: '100%', borderRadius: 8, overflow: 'hidden' }}>
+        <img src={getCardImage(card.rank, card.suit)} style={{
+          width: '100%', 
+          height: '100%', 
+          objectFit: 'contain',
+          borderRadius: '6px',
+        }} />
+      </div>
+      {isJokerCard && (
+        <img
+          src={jokerHatImg}
+          draggable={false}
+          style={{
+            position: 'absolute',
+            top: -28,
+            left: -16,
+            width: Math.round(width * 0.65),
+            height: 'auto',
+            pointerEvents: 'none',
+            zIndex: 10,
+            filter: 'drop-shadow(0 1px 3px rgba(0,0,0,0.7))',
+          }}
+        />
+      )}
     </div>
   )
 }
@@ -111,7 +132,7 @@ export default function AnimationLayer({ animations, onComplete }) {
                 position: 'absolute', inset: 0, backfaceVisibility: 'hidden',
                 transform: 'rotateY(180deg)'
               }}>
-                <CardFace card={anim.card} />
+                <CardFace card={anim.card} width={anim.width || 72} />
               </div>
             </motion.div>
           )

@@ -1,24 +1,23 @@
 import React from 'react'
 import { motion } from 'framer-motion'
 
-function pillStyle(enabled, palette, { height = 42, minWidth = 92, padding = '0 18px' } = {}) {
+function pillStyle(enabled, palette, { height = 38, minWidth = 38, padding = '0 10px' } = {}) {
   return {
-    minWidth: minWidth * 0.75,
-    height: height * 0.8,
+    width: 'auto',
+    height: height,
+    minWidth: height * 1.8,   // rectangle: wider than tall
     padding: '0 10px',
-    borderRadius: 999,
-    border: `2px solid ${enabled ? palette.border : 'rgba(255,255,255,0.1)'}`,
+    borderRadius: 6,          // slightly rounded rectangle
+    border: `1.5px solid ${enabled ? palette.border : 'rgba(255,255,255,0.1)'}`,
     background: enabled ? palette.bg : 'rgba(255,255,255,0.05)',
     color: enabled ? palette.color : 'rgba(255,255,255,0.3)',
     fontWeight: 800,
     fontSize: 11,
     cursor: enabled ? 'pointer' : 'not-allowed',
-    boxShadow: enabled ? palette.shadow : '0 4px 12px rgba(0,0,0,0.3)',
+    boxShadow: enabled ? palette.shadow : '0 2px 6px rgba(0,0,0,0.3)',
     opacity: enabled ? 1 : 0.4,
-    transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+    transition: 'all 0.2s ease',
     backdropFilter: 'blur(8px)',
-    textTransform: 'capitalize',
-    transform: enabled ? 'translateY(0)' : 'translateY(0)',
     filter: enabled ? 'brightness(1)' : 'brightness(0.6) grayscale(0.3)',
   }
 }
@@ -48,16 +47,20 @@ export default function Controls({
   buttonHeight = 42,
   buttonMinWidth = 82,
   buttonPadding = '0 18px',
+  showOnly = null,   // null = show all, or array like ['sort','drop'] / ['group','discard','declare']
 }) {
+  const show = (name) => !showOnly || showOnly.includes(name)
+
   return (
     <div
       style={{
         display: 'flex',
-        gap: '5px',
+        gap: '8px',
         zIndex: 15,
         pointerEvents: 'auto',
       }}
     >
+      {show('sort') && (
       <motion.button
         onClick={onSort}
         disabled={!canSortMove}
@@ -72,7 +75,9 @@ export default function Controls({
       >
         Sort
       </motion.button>
+      )}
 
+      {show('group') && (
       <motion.button
         onClick={onGroup}
         disabled={!canGroupMove}
@@ -87,7 +92,9 @@ export default function Controls({
       >
         Group
       </motion.button>
+      )}
 
+      {show('drop') && (
       <motion.button
         onClick={onDropGame}
         disabled={!canDropMove}
@@ -102,7 +109,9 @@ export default function Controls({
       >
         Drop
       </motion.button>
+      )}
 
+      {show('discard') && (
       <motion.button
         onClick={onDiscard}
         disabled={!canDiscardMove}
@@ -117,7 +126,9 @@ export default function Controls({
       >
         Discard
       </motion.button>
+      )}
 
+      {show('declare') && (
       <motion.button
         onClick={onDeclare}
         disabled={!canDeclareMove}
@@ -132,6 +143,7 @@ export default function Controls({
       >
         Declare
       </motion.button>
+      )}
     </div>
   )
 }

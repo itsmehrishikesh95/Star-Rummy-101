@@ -1,6 +1,7 @@
 import React, { useState } from 'react'
 import useGameStore from '../store'
 import socketService from '../services/socket'
+import { getOrCreatePlayerId } from '../services/gameSocket'
 
 const DOT = { backgroundImage:'radial-gradient(#1A5C35 1px, transparent 1px)', backgroundSize:'20px 20px' }
 const GOLD = { background:'linear-gradient(180deg,#F5C518 0%,#D4A020 100%)' }
@@ -42,6 +43,16 @@ export function PrivateRoomScreen() {
     deductCoins(fee)
     setLobbyFlow('create')
     setIsRoomHost(true)
+
+    // Register room on the server so other players can join
+    const s = socketService.getSocket()
+    if (s?.connected) {
+      const playerId = getOrCreatePlayerId()
+      const playerName = useGameStore.getState().user?.name || useGameStore.getState().profileName || 'Host'
+      s.emit('register_room', { code, playerName, playerId })
+      console.log('[PrivateRoom] register_room emitted:', code)
+    }
+
     setScreen('match-lobby')
   }
 
@@ -139,81 +150,24 @@ export function JoinRoomScreen() {
     if (code.some(c => !c)) return
 
     const entered = code.join('')
-    console.log('VALIDATING:', entered)
-    setLoading(true)
-    setError('')
+    console.log('[JoinRoomScreen] JOIN CODE:', entered)
 
-    // Always use the singleton socket — never create a new instance
+    setActiveRoomCode(entered)
+    setEntryFee(500)
+    deductCoins(500)
+    setLobbyFlow('join')
+    setIsRoomHost(false)
+
+    // Emit join_room to the server so host sees us in the lobby
     const s = socketService.getSocket()
-    if (!s) {
-      setLoading(false)
-      setError('Not connected to server. Please try again.')
-      return
-    }
-
-    console.log('CLIENT SOCKET ID:', s.id)
-
-    // Remove any stale listener before adding fresh one
-    s.off('room_validated')
-
-    let timeoutId = null
-
-    const handleValidation = ({ code: responseCode, valid }) => {
-      clearTimeout(timeoutId)
-      console.log('[JoinRoomScreen] ROOM VALIDATED RESPONSE:', { code: responseCode, valid })
-
-      if (!valid) {
-        // Retry once after 500ms — host may not have registered yet (race condition)
-        console.log('[JoinRoomScreen] Retrying validation in 500ms...')
-        setTimeout(() => {
-          s.off('room_validated')
-
-          const handleRetry = ({ code: retryCode, valid: retryValid }) => {
-            console.log('[JoinRoomScreen] RETRY VALIDATED RESPONSE:', { code: retryCode, valid: retryValid })
-            if (!retryValid) {
-              setLoading(false)
-              setError('Invalid room code or host not available')
-              return
-            }
-            onValidSuccess()
-          }
-
-          s.emit('validate_room', { code: entered })
-          s.once('room_validated', handleRetry)
-        }, 500)
-        return
-      }
-
-      onValidSuccess()
-    }
-
-    const onValidSuccess = () => {
-      // Save entered code as the active room code so downstream screens are consistent
-      setActiveRoomCode(entered)
-
-      // Join the socket room on the server
-      const user = useGameStore.getState().user
-      const playerName = user?.name || 'Player'
-      console.log('JOINING:', entered)
+    if (s?.connected) {
+      const state = useGameStore.getState()
+      const playerName = state.user?.name || state.profileName || 'Player'
       s.emit('join_room', { code: entered, playerName })
-
-      setEntryFee(500)
-      deductCoins(500)
-      setLobbyFlow('join')
-      setIsRoomHost(false)
-      setScreen('match-lobby')
+      console.log('[JoinRoom] join_room emitted:', entered)
     }
 
-    // Emit validation request — uses only the entered code, never global state
-    s.emit('validate_room', { code: entered })
-    s.once('room_validated', handleValidation)
-
-    // Timeout fallback — if server doesn't respond in 5s
-    timeoutId = setTimeout(() => {
-      s.off('room_validated', handleValidation)
-      setLoading(false)
-      setError('Invalid room code or host not available')
-    }, 5000)
+    setScreen('match-lobby')
   }
 
   return (

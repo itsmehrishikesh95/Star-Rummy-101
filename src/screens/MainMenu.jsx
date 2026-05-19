@@ -13,31 +13,37 @@ export default function MainMenu() {
   const coins = useGameStore(s => s.coins)
   const user = useGameStore(s => s.user)
   const setScreen = useGameStore(s => s.setScreen)
+  const setActiveRoomCode = useGameStore(s => s.setActiveRoomCode)
+  const resetGameData = useGameStore(s => s.resetGameData)
+  const profileName   = useGameStore(s => s.profileName)
+  const profileAvatar = useGameStore(s => s.profileAvatar)
 
   const isGuest = user?.isGuest
+  const displayName = profileName || user?.name || 'Player'
+  const displayAvatar = profileAvatar || '👤'
+
+  const startPractice = () => {
+    setScreen('practice-mode')
+  }
 
   return (
     <div className="main-menu">
       <div className="main-card">
         {/* Top bar */}
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
+          {/* Profile button */}
           <button
-            onClick={() => setScreen('home')}
+            onClick={() => setScreen('profile')}
             style={{
-              width: 40,
-              height: 40,
-              borderRadius: '50%',
-              border: '1px solid rgba(255,255,255,0.2)',
-              background: 'rgba(0,0,0,0.3)',
-              color: 'white',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              cursor: 'pointer',
-              fontSize: 18,
+              width: 40, height: 40, borderRadius: '50%',
+              border: '2px solid rgba(245,197,24,0.5)',
+              background: 'rgba(245,197,24,0.1)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              cursor: 'pointer', fontSize: 22,
             }}
+            title="My Profile"
           >
-            ←
+            {displayAvatar}
           </button>
           <div
             style={{
@@ -55,6 +61,13 @@ export default function MainMenu() {
               {coins.toLocaleString()}
             </span>
           </div>
+        </div>
+
+        {/* Player name */}
+        <div style={{ textAlign: 'center', marginBottom: 6 }}>
+          <span style={{ fontSize: 13, color: C.textMuted, fontWeight: 700 }}>
+            Welcome, <span style={{ color: '#fff' }}>{displayName}</span>
+          </span>
         </div>
 
         {/* Subscription badge */}
@@ -139,6 +152,16 @@ export default function MainMenu() {
 
         {/* Primary buttons */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 24 }}>
+
+          {/* Practice Mode — shows 2P / 6P picker */}
+          <button
+            className="gold-btn"
+            onClick={startPractice}
+            style={{ width: '100%', cursor: 'pointer' }}
+          >
+            🎮 Practice Mode
+          </button>
+
           <button
             className="gold-btn"
             onClick={() => isGuest ? alert('Please login to create private rooms') : setScreen('subscription')}
@@ -146,11 +169,15 @@ export default function MainMenu() {
             style={{
               width: '100%',
               cursor: isGuest ? 'not-allowed' : 'pointer',
-              opacity: isGuest ? 0.5 : 1
+              opacity: isGuest ? 0.5 : 1,
+              background: 'transparent',
+              border: '1px solid rgba(245,197,24,0.4)',
+              color: '#F5C518',
             }}
           >
             Create Private Room {isGuest && '(Login Required)'}
           </button>
+
           <button
             className="outline-btn"
             onClick={() => setScreen('join-room')}

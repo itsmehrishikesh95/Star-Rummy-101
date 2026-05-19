@@ -6,6 +6,7 @@ import useGameStore from '../store'
 import { calculateAlignment } from '../utils/alignmentConfig'
 import RummyCardAnimations from './RummyCardAnimations'
 import PlayersAroundTable from './PlayersAroundTable'
+import { PlayerCircularTimer } from './PlayersAroundTable'
 import CenterArea from './CenterArea'
 import PlayerHand from './PlayerHand'
 import Controls from './Controls'
@@ -13,6 +14,7 @@ import TopBar from './TopBar'
 import Scoreboard from './Scoreboard'
 import AnimationLayer from './AnimationLayer'
 import startBg from '../assets/NEWGAMETABLE.png'
+import jokerHatImg from '../assets/Joker_hat.png'
 import { getCardImage } from '../utils/cardImage'
 import { validateDeclaration as engineValidateDeclaration, isValidGroup as engineIsValidGroup } from '../game/engine'
 import socketService from '../services/socket'
@@ -397,7 +399,7 @@ const ANIM_STYLES = `
 
 export default function GameScreen() {
   const setScreen = useGameStore(s => s.setScreen)
-  const tableSize = 6
+  const tableSize = useGameStore(s => s.tableSize) || 6
   const user = useGameStore(s => s.user)
   const activeRoomCode = useGameStore(s => s.activeRoomCode)  // multiplayer room code
   const isMultiplayer = !!activeRoomCode
@@ -479,7 +481,10 @@ export default function GameScreen() {
   const isPlayerTurn = currentTurn === 0
   const currentTurnRef = useRef(0)
   const [turnTimer, setTurnTimer] = useState(30)
-  const [toast, setToast] = useState('')
+  // Two-phase timer: 'main' (30s green) → 'penalty' (10s red) → auto-discard
+  const [timerPhase, setTimerPhase] = useState('main') // 'main' | 'penalty' | 'idle'
+  const [penaltyTimer, setPenaltyTimer] = useState(10)
+  const penaltyTimerRef = useRef(null)
   const [dealtCount, setDealtCount] = useState(0)
   const [showDeclare, setShowDeclare] = useState(false)
   const [showResult, setShowResult] = useState(false)
@@ -507,7 +512,6 @@ export default function GameScreen() {
   const aiTurnTimeoutRef = useRef(null)
   const aiDiscardTimeoutRef = useRef(null)
   const aiActionClearTimeoutRef = useRef(null)
-  const toastTimeoutRef = useRef(null)
   const confettiTimeoutRef = useRef(null)
   const groupFlashTimeoutRef = useRef(null)
   const isAdvancingTurnRef = useRef(false)
@@ -525,6 +529,8 @@ export default function GameScreen() {
   const [scoreboard, setScoreboard] = useState([])
   const [roundNumber, setRoundNumber] = useState(1)
   const [winner, setWinner] = useState(null)
+  // dealerIndex: 0 = human player, 1-5 = AI index+1. Tracks who won the toss (dealer).
+  const [dealerIndex, setDealerIndex] = useState(null)
 
   const drawPileRef = useRef(null)
   const discardPileRef = useRef(null)
@@ -558,11 +564,11 @@ export default function GameScreen() {
 
   useEffect(() => () => {
     clearInterval(timerRef.current)
+    clearInterval(penaltyTimerRef.current)
     clearTimeout(turnStartTimeoutRef.current)
     clearTimeout(aiTurnTimeoutRef.current)
     clearTimeout(aiDiscardTimeoutRef.current)
     clearTimeout(aiActionClearTimeoutRef.current)
-    clearTimeout(toastTimeoutRef.current)
     clearTimeout(confettiTimeoutRef.current)
     clearTimeout(groupFlashTimeoutRef.current)
   }, [])
@@ -624,16 +630,13 @@ export default function GameScreen() {
 
       onGameError: (data) => {
         console.warn('[Game Error]', data)
-        showToast(data.message || 'Game error')
       },
 
       onHostChanged: (data) => {
         console.log('[GameScreen] host_changed', data)
-        showToast('Host left — game continues')
       },
 
       onRoomClosed: (data) => {
-        showToast(data.reason || 'Room closed')
         setTimeout(() => setScreen('home'), 2500)
       },
     })
@@ -650,11 +653,11 @@ export default function GameScreen() {
 
   function clearPendingTurnTimers() {
     clearInterval(timerRef.current)
+    clearInterval(penaltyTimerRef.current)
     clearTimeout(turnStartTimeoutRef.current)
     clearTimeout(aiTurnTimeoutRef.current)
     clearTimeout(aiDiscardTimeoutRef.current)
     clearTimeout(aiActionClearTimeoutRef.current)
-    clearTimeout(toastTimeoutRef.current)
     clearTimeout(confettiTimeoutRef.current)
     clearTimeout(groupFlashTimeoutRef.current)
   }
@@ -699,9 +702,9 @@ export default function GameScreen() {
   // ── INIT / DEAL ANIMATION ──
   useEffect(() => {
     console.log('INIT EFFECT TRIGGERED')
-    const numPlayers = 6
-    // Use 2 decks for 6 players
-    const deck = numPlayers === 6
+    const numPlayers = tableSize
+    // Use 2 decks for 6 players, 1 deck for 2 players
+    const deck = numPlayers >= 5
       ? makeTwoDecks()
       : makeDeck()
     const dealt = dealCards(deck, numPlayers)
@@ -715,9 +718,7 @@ export default function GameScreen() {
 
     setDrawPile(markWildJokers(dealt.drawPile))
     setDiscardPile(markWildJokers(dealt.discardPile))
-    setWildJoker(wildCard)
-
-    // Set up AI players with marked wild jokers
+    setWildJoker({ ...wildCard, isWildJoker: true })
     const ais = dealt.aiHands.map((hand, i) => ({
       id: i,
       name: AI_NAMES[i],
@@ -797,9 +798,9 @@ export default function GameScreen() {
           ? 'You won the toss!'
           : `Toss won by ${ais[firstPlayer - 1]?.name || 'AI'}.`
         console.log('DEALING COMPLETE - Starting turn', { firstPlayer, tossMessage })
+        setDealerIndex(firstPlayer)
         turnStartTimeoutRef.current = setTimeout(() => {
           console.log('CALLING startTurn', { firstPlayer })
-          showToast(tossMessage)
           turnEngine.startTurn(firstPlayer)
         }, 300)
       }, totalDealTime)
@@ -811,22 +812,54 @@ export default function GameScreen() {
     }
   }, [])  // Empty dependency array - only run once on mount
 
-  // ── TURN TIMER ──
+  // ── TURN TIMER (two-phase: 30s green → 10s red → auto-discard) ──
   useEffect(() => {
-    if (gameState !== 'discard' && gameState !== 'draw') return
+    if (gameState !== 'discard' && gameState !== 'draw') {
+      // Not player's turn or game not active — reset both timers
+      clearInterval(timerRef.current)
+      clearInterval(penaltyTimerRef.current)
+      setTimerPhase('idle')
+      return
+    }
+
+    // Reset to main phase whenever a new turn starts
     clearInterval(timerRef.current)
+    clearInterval(penaltyTimerRef.current)
     setTurnTimer(30)
+    setPenaltyTimer(10)
+    setTimerPhase('main')
+
+    // Phase 1: 30s green countdown
     timerRef.current = setInterval(() => {
       setTurnTimer(v => {
         if (v <= 1) {
           clearInterval(timerRef.current)
-          if (isPlayerTurn && !isAdvancingTurnRef.current) autoDiscard()
+          if (isPlayerTurn) {
+            // Start penalty phase
+            setTimerPhase('penalty')
+            setPenaltyTimer(10)
+            penaltyTimerRef.current = setInterval(() => {
+              setPenaltyTimer(p => {
+                if (p <= 1) {
+                  clearInterval(penaltyTimerRef.current)
+                  setTimerPhase('idle')
+                  if (!isAdvancingTurnRef.current) autoDiscard()
+                  return 0
+                }
+                return p - 1
+              })
+            }, 1000)
+          }
           return 0
         }
         return v - 1
       })
     }, 1000)
-    return () => clearInterval(timerRef.current)
+
+    return () => {
+      clearInterval(timerRef.current)
+      clearInterval(penaltyTimerRef.current)
+    }
   }, [gameState, isPlayerTurn])
 
   // ── CENTRALIZED TURN ENGINE ──
@@ -853,6 +886,8 @@ export default function GameScreen() {
       console.log('SETTING GAME STATE TO DRAW')
       setGameState('draw')
       setTurnTimer(30)
+      setPenaltyTimer(10)
+      setTimerPhase('main')
       console.log('GAME STATE SET TO DRAW', { playerIndex, isPlayerTurn: playerIndex === 0 })
 
       if (playerIndex !== 0) {
@@ -1029,18 +1064,11 @@ export default function GameScreen() {
         clearTimeout(aiActionClearTimeoutRef.current)
         aiActionClearTimeoutRef.current = setTimeout(() => {
           setAiActionAnim(null)
-          showToast(`${aiPlayersRef.current[aiIndex]?.name || 'AI'} discarded ${discard.rank}${discard.suit}`)
           aiTurnExecutingRef.current = false
           turnEngine.advanceTurnOnce('ai-discard-complete')
         }, 600)
       }, 500)
     }
-  }
-
-  function showToast(msg) {
-    setToast(msg)
-    clearTimeout(toastTimeoutRef.current)
-    toastTimeoutRef.current = setTimeout(() => setToast(''), 2500)
   }
 
   function getTossMessage(playerIndex) {
@@ -1237,9 +1265,14 @@ export default function GameScreen() {
         return { ok: false, message: 'Discard pile is empty!' }
       }
       if (!payload.fromDiscard && drawPile.length === 0) {
-        console.log('🚫 DRAW PILE EMPTY', { action, drawPileLength: drawPile.length })
-        // FIX: Don't call showToast during validation - only return result
-        return { ok: false, message: 'Draw pile is empty!' }
+        // Allow draw if discard pile can be reshuffled (keep top card, shuffle rest)
+        if (discardPile.length <= 1) {
+          console.log('🚫 DRAW PILE EMPTY AND CANNOT RESHUFFLE', { action, drawPileLength: drawPile.length })
+          return { ok: false, message: 'Draw pile is empty!' }
+        }
+        // else: drawFromPile will handle the reshuffle — allow the action
+        console.log('✅ DRAW ALLOWED (will reshuffle discard)', { discardPileLength: discardPile.length })
+        return { ok: true }
       }
       console.log('✅ DRAW ALLOWED', { action, gameState, hasDrawn })
       return { ok: true }
@@ -1309,7 +1342,6 @@ export default function GameScreen() {
   function runGuarded(action, fn, payload = {}) {
     const verdict = validateMove(action, payload)
     if (!verdict.ok) {
-      showToast(verdict.message || 'Invalid move')
       return false
     }
     fn()
@@ -1353,7 +1385,6 @@ export default function GameScreen() {
         }))
       )
 
-      showToast(reason)
       return next
     })
   }
@@ -1397,7 +1428,7 @@ export default function GameScreen() {
 
     setDrawPile(markWildJokers(dealt.drawPile))
     setDiscardPile(markWildJokers(dealt.discardPile))
-    setWildJoker(wildCard)
+    setWildJoker({ ...wildCard, isWildJoker: true })
 
     // AI hands set instantly — no animation
     setAiPlayers(prev =>
@@ -1454,7 +1485,7 @@ export default function GameScreen() {
         const tossMessage = firstPlayer === 0
           ? 'You won the toss!'
           : `Toss won by ${aiPlayersRef.current[firstPlayer - 1]?.name || 'AI'}.`
-        showToast(tossMessage)
+        setDealerIndex(firstPlayer)
         turnStartTimeoutRef.current = setTimeout(() => {
           turnEngine.startTurn(firstPlayer)
         }, 300)
@@ -1490,7 +1521,6 @@ export default function GameScreen() {
   // DRAW CARD
   function drawFromPile(fromDiscard = false) {
     if (drawPendingRef.current) {
-      showToast('Drawing already in progress...')
       return
     }
 
@@ -1513,18 +1543,16 @@ export default function GameScreen() {
     if (fromDiscard) {
       if (!discardPile.length) {
         drawPendingRef.current = false
-        showToast('Discard pile is empty!'); return
+        return
       }
       card = discardPile[discardPile.length - 1]
       setDiscardPile(p => p.slice(0, -1))
-      showToast(`Drew ${card.rank}${card.suit} from open deck`)
     } else {
       let currentDrawPile = drawPile
       if (!currentDrawPile.length) {
         // Reshuffle discard pile (except top card) into draw pile
         if (discardPile.length <= 1) {
           drawPendingRef.current = false
-          showToast('No cards available to draw!')
           return
         }
         const topCard = discardPile[discardPile.length - 1]
@@ -1532,13 +1560,11 @@ export default function GameScreen() {
         currentDrawPile = shuffle(cardsToShuffle)
         setDiscardPile([topCard])
         setDrawPile(currentDrawPile)
-        showToast('Reshuffled discard pile!')
         turnEngine.log('RESHUFFLE', { newDrawPileSize: currentDrawPile.length })
       }
       const ri = Math.floor(Math.random() * currentDrawPile.length)
       card = currentDrawPile[ri]
       setDrawPile(p => p.filter((_, i) => i !== ri))
-      showToast('Drew from closed deck')
     }
 
     // Mark wild joker if needed
@@ -1586,45 +1612,62 @@ export default function GameScreen() {
       setHasDrawn(true)
       setGameState('discard')
       drawPendingRef.current = false
+
+      // Show joker reveal — no toast
+      if (card.isWildJoker) {
+      }
     }, 500)
   }
 
-  // DISCARD CARD
-  function discardCard() {
-    // FIX: Check discard lock to prevent spam
+  // DISCARD CARD — accepts optional cardOverride for drag-to-discard
+  function discardCard(cardOverride = null) {
     if (discardPendingRef.current) {
-      showToast('Discard already in progress...')
       return
     }
-    
+
+    // Use drag-supplied card if provided, otherwise fall back to selectedCard state
+    const cardToDiscard = cardOverride || selectedCard
+    if (!cardToDiscard) return
+
+    // Temporarily sync selectedCard so runGuarded validation passes
+    if (cardOverride) setSelectedCard(cardOverride)
+
     if (!runGuarded('discard', () => { })) return
 
-    // ── MULTIPLAYER: emit to server, wait for game_state ──
+    // ── MULTIPLAYER ──
     if (isMultiplayer) {
-      if (!selectedCard) return
       discardPendingRef.current = true
-      emitDiscardCard(activeRoomCode, selectedCard.id)
+      emitDiscardCard(activeRoomCode, cardToDiscard.id)
       setSelectedCard(null)
       setSelectedCards([])
-      // Server will broadcast updated game_state — release lock after brief delay
       setTimeout(() => { discardPendingRef.current = false }, 1000)
       return
     }
 
-    // ── SOLO MODE: local state update ──
-    // FIX: Set discard lock
+    // ── SOLO MODE ──
     discardPendingRef.current = true
+    turnEngine.log('DISCARD', { card: cardToDiscard?.id, playerHandLength: playerHand.length })
 
-    turnEngine.log('DISCARD', { selectedCard: selectedCard?.id, playerHandLength: playerHand.length, isPlayerTurn })
-
-    // Trigger flying card animation from hand to discard pile
-    const handBox = handRef.current?.getBoundingClientRect()
     const discardBox = discardPileRef.current?.getBoundingClientRect()
-    
+    let startX = window.innerWidth / 2
+    let startY = window.innerHeight - 100
+    if (handRef.current) {
+      const cardEl = handRef.current.querySelector(`[data-card-id="${cardToDiscard.id}"]`)
+      if (cardEl) {
+        const cardBox = cardEl.getBoundingClientRect()
+        startX = cardBox.left + cardBox.width / 2
+        startY = cardBox.top + cardBox.height / 2
+      } else {
+        const handBox = handRef.current.getBoundingClientRect()
+        startX = handBox.left + handBox.width / 2
+        startY = handBox.top
+      }
+    }
+
     setLayerAnimations(prev => [...prev, {
       id: `discard_${Date.now()}`,
-      card: selectedCard,
-      start: { x: handBox?.left + (handBox?.width/2 || 0), y: handBox?.top || window.innerHeight },
+      card: cardToDiscard,
+      start: { x: startX, y: startY },
       end: { x: discardBox?.left || window.innerWidth/2, y: discardBox?.top || window.innerHeight/2 },
       faceUp: true,
       flipMidFlight: false,
@@ -1633,31 +1676,25 @@ export default function GameScreen() {
       scaleEnd: 0.9
     }])
 
-    // Update state after animation completes (500ms)
     setTimeout(() => {
-      // FIX: Validate round is still active
       if (activeRoundRef.current !== roundNumber) {
-        console.log('DISCARD CALLBACK CANCELLED - Round changed')
         discardPendingRef.current = false
         setFlyingCard(null)
         return
       }
-      
-      const newHand = playerHand.filter(c => c.id !== selectedCard.id)
+      const newHand = playerHand.filter(c => c.id !== cardToDiscard.id)
       if (newHand.length !== 13) {
-        showToast('You must have 13 cards after discarding')
         setFlyingCard(null)
-        discardPendingRef.current = false  // FIX: Release lock
+        discardPendingRef.current = false
         return
       }
-      setDiscardPile(p => [...p, selectedCard])
+      setDiscardPile(p => [...p, cardToDiscard])
       setPlayerHand(newHand)
       setSelectedCard(null)
       setSelectedCards([])
       setHasDrawn(false)
-      showToast(`Discarded ${selectedCard.rank}${selectedCard.suit}`)
       setGameState('draw')
-      discardPendingRef.current = false  // FIX: Release lock
+      discardPendingRef.current = false
       turnEngine.advanceTurnOnce('player-discard')
     }, 500)
   }
@@ -1685,8 +1722,6 @@ export default function GameScreen() {
     setSelectedCard(null)
     setHasDrawn(false)
 
-    showToast(`${dropType}: +${pts} pts. You sit out this round.`)
-
     // Advance turn to next player — game continues without human
     turnEngine.advanceTurnOnce('player-drop')
   }
@@ -1700,7 +1735,6 @@ export default function GameScreen() {
 
     const handAfterDiscard = playerHand.filter(c => c.id !== selectedCard.id)
     if (handAfterDiscard.length !== 13) {
-      showToast('Need exactly 13 cards to declare')
       return
     }
 
@@ -1744,7 +1778,6 @@ export default function GameScreen() {
       })
 
       setResultMsg('Wrong show! +80 pts penalty. Round over.')
-      showToast('Wrong show! +80 pts')
       setTimeout(() => setShowResult(true), 800)
       return
     }
@@ -1794,7 +1827,7 @@ export default function GameScreen() {
   // 4. Remaining cards go into an "invalid" group
   // Groups ordered: Pure Seq → Sequence → Set → Invalid (highest pts first)
   function sortHand() {
-    if (!canSortMove) { showToast('Cannot sort now'); return }
+    if (!canSortMove) { return }
 
     const hand = [...playerHand]
     const used = new Set()
@@ -1943,7 +1976,6 @@ export default function GameScreen() {
     if (sortRef.current) {
       sortRef.current(finalGroups)
     }
-    showToast('Hand sorted!')
   }
 
   // DRAG TO REORDER (touch/drag friendly)
@@ -1956,17 +1988,16 @@ export default function GameScreen() {
   }
 
   // SELECT CARD
-  // - selectedCards (multi-select for Sort/Group): always allowed
-  // - selectedCard (single-select for Discard/Declare): only on player's turn
+  // - selectedCards (multi-select for Sort/Group): always allowed, tap again to deselect
+  // - selectedCard (single-select for Discard/Declare): only on player's turn, tap again to deselect
   function selectCard(card) {
-    // Multi-select for Group — always allowed (sort/group work anytime)
+    // Multi-select toggle — always allowed
     setSelectedCards(prev => {
       const exists = prev.some(c => c.id === card.id)
-      if (exists) return prev.filter(c => c.id !== card.id)
-      return [...prev, card]
+      return exists ? prev.filter(c => c.id !== card.id) : [...prev, card]
     })
 
-    // Single select for Discard/Declare — only on player's turn
+    // Single select toggle — only on player's turn
     if (isPlayerTurn && (gameState === 'draw' || gameState === 'discard')) {
       setSelectedCard(p => p?.id === card.id ? null : card)
     }
@@ -1975,10 +2006,9 @@ export default function GameScreen() {
   // GROUP — take all selectedCards, pull them from their current groups, form a new group
   function groupHand() {
     if (selectedCards.length < 2) {
-      showToast('Select 2 or more cards to group')
       return
     }
-    if (!canSortMove) { showToast('Cannot group now'); return }
+    if (!canSortMove) { return }
 
     const selectedIds = new Set(selectedCards.map(c => c.id))
 
@@ -1997,41 +2027,62 @@ export default function GameScreen() {
 
       return [...remaining, newGroup]
     })
-
-    showToast('Cards grouped!')
   }
 
-  // AUTO DISCARD (timer ran out)
+  // AUTO PLAY (timer ran out)
+  // Case A: player hasn't drawn yet → auto-draw from closed pile, then auto-discard
+  // Case B: player already drew (14 cards) → auto-discard highest-point invalid card
   function autoDiscard() {
     if (!playerHand.length) return
-    // Discard highest point invalid card
-    const groups = getHandGroups(playerHand)
-    const evals = groups.map(g => evalGroup(g))
-    let card = playerHand[playerHand.length - 1]
-    let maxPts = -1
-    groups.forEach((g, gi) => {
-      if (!evals[gi].valid) {
-        g.forEach(c => {
-          if (c.pts > maxPts) { maxPts = c.pts; card = c }
-        })
-      }
-    })
-    setSelectedCard(card)
-    setTimeout(() => {
-      // FIX: Validate round is still active
-      if (activeRoundRef.current !== roundNumber) {
-        console.log('AUTO-DISCARD CALLBACK CANCELLED - Round changed')
+
+    const executeDiscard = (hand) => {
+      // Pick highest-point card from an invalid group; fallback to last card
+      const groups = getHandGroups(hand)
+      const evals = groups.map(g => evalGroup(g))
+      let card = hand[hand.length - 1]
+      let maxPts = -1
+      groups.forEach((g, gi) => {
+        if (!evals[gi].valid) {
+          g.forEach(c => {
+            if ((c.pts || 0) > maxPts) { maxPts = c.pts; card = c }
+          })
+        }
+      })
+
+      setSelectedCard(card)
+      setTimeout(() => {
+        if (activeRoundRef.current !== roundNumber) return
+        const newHand = hand.filter(c => c.id !== card.id)
+        setDiscardPile(p => [...p, card])
+        setPlayerHand(newHand)
+        setSelectedCard(null)
+        setSelectedCards([])
+        setHasDrawn(false)
+        setGameState('draw')
+        turnEngine.advanceTurnOnce('auto-discard-timeout')
+      }, 500)
+    }
+
+    if (!hasDrawn) {
+      // Auto-draw from closed pile first
+      const pile = drawPile
+      if (!pile.length) {
+        // No cards in draw pile — skip turn
+        turnEngine.advanceTurnOnce('auto-skip-empty-deck')
         return
       }
-      
-      const newHand = playerHand.filter(c => c.id !== card.id)
-      setDiscardPile(p => [...p, card])
+      const drawnCard = pile[pile.length - 1]
+      const newPile = pile.slice(0, -1)
+      setDrawPile(newPile)
+      const newHand = [...playerHand, drawnCard]
       setPlayerHand(newHand)
-      setSelectedCard(null)
-      setHasDrawn(false)
-      setGameState('draw')
-      turnEngine.advanceTurnOnce('auto-discard-timeout')
-    }, 500)
+      setHasDrawn(true)
+      // Small delay so the draw is visible before discard
+      setTimeout(() => executeDiscard(newHand), 400)
+    } else {
+      // Already drew — just discard
+      executeDiscard(playerHand)
+    }
   }
 
   function handleCardDragStart(e, index) {
@@ -2110,13 +2161,34 @@ export default function GameScreen() {
   // ── Mini card for result screen — uses new 52_cards_png images ──
   function MiniCard({ card }) {
     if (!card) return null
+    const isJokerCard = card.isWildJoker || card.isJoker
     return (
-      <div style={{ width: 28, height: 40, borderRadius: 4, flexShrink: 0, overflow: 'hidden', boxShadow: '0 1px 4px rgba(0,0,0,0.35)' }}>
-        <img
-          src={getCardImage(card.rank, card.suit)}
-          style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block', borderRadius: 4 }}
-          draggable={false}
-        />
+      <div style={{
+        width: 28, height: 40, borderRadius: 4, flexShrink: 0,
+        overflow: 'visible', position: 'relative',
+        boxShadow: isJokerCard
+          ? '0 0 0 1.5px #FFD700, 0 0 5px rgba(255,215,0,0.5)'
+          : '0 1px 4px rgba(0,0,0,0.35)',
+      }}>
+        <div style={{ width: '100%', height: '100%', borderRadius: 4, overflow: 'hidden' }}>
+          <img
+            src={getCardImage(card.rank, card.suit)}
+            style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block', borderRadius: 4 }}
+            draggable={false}
+          />
+        </div>
+        {isJokerCard && (
+          <img
+            src={jokerHatImg}
+            draggable={false}
+            style={{
+              position: 'absolute', top: -14, left: -9,
+              width: 18, height: 'auto',
+              pointerEvents: 'none', zIndex: 10,
+              filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.7))',
+            }}
+          />
+        )}
       </div>
     )
   }
@@ -2255,8 +2327,8 @@ export default function GameScreen() {
   return (
     <div
       style={{
-        width: '100vw',
-        height: '100vh',
+        width: '100dvw',
+        height: '100dvh',
         display: 'flex',
         flexDirection: 'column',
         backgroundImage: `url(${startBg})`,
@@ -2268,9 +2340,49 @@ export default function GameScreen() {
         position: 'relative',
       }}
     >
-      {/* Top Bar */}
-      <div style={{ flexShrink: 0, zIndex: 10 }}>
-        <TopBar playerScore={playerScore} onBack={() => setScreen('home')} onReport={() => showToast('Report issue')} />
+      {/* Top Bar — fully transparent, only ← and ⚙ buttons float over the table */}
+      <div style={{
+        position: 'absolute',
+        top: 0, left: 0, right: 0,
+        zIndex: 20,
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        padding: '8px 10px',
+        pointerEvents: 'none',
+      }}>
+        {/* Back button */}
+        <button
+          onClick={() => setScreen('home')}
+          style={{
+            pointerEvents: 'auto',
+            width: 36, height: 36,
+            borderRadius: 10,
+            background: 'rgba(0,0,0,0.45)',
+            border: '1px solid rgba(255,255,255,0.18)',
+            color: '#fff',
+            fontSize: 18,
+            cursor: 'pointer',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            backdropFilter: 'blur(8px)',
+          }}
+        >←</button>
+        {/* Settings button */}
+        <button
+          onClick={() => {}}
+          style={{
+            pointerEvents: 'auto',
+            width: 36, height: 36,
+            borderRadius: 10,
+            background: 'rgba(0,0,0,0.45)',
+            border: '1px solid rgba(255,255,255,0.18)',
+            color: '#fff',
+            fontSize: 16,
+            cursor: 'pointer',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            backdropFilter: 'blur(8px)',
+          }}
+        >⚙</button>
       </div>
 
       {/* TABLE ZONE */}
@@ -2290,8 +2402,14 @@ export default function GameScreen() {
           style={{
             position: 'relative',
             width: isMobileLandscape ? 'min(98vw, 1000px)' : 'min(98vw, 900px)',
-            aspectRatio: '2.2 / 1',
-            maxHeight: isMobileLandscape ? '52vh' : '50vh',
+            // Portrait phones: use a taller fixed height so the table fills the zone properly.
+            // Landscape: keep aspect-ratio-driven sizing.
+            ...(isMobileLandscape
+              ? { aspectRatio: '2.2 / 1', maxHeight: '52vh' }
+              : isLandscape
+                ? { aspectRatio: '2.2 / 1', maxHeight: '55vh' }
+                : { height: 'min(46vw, 340px)', minHeight: 180 }
+            ),
             overflow: 'visible',
           }}
         >
@@ -2310,8 +2428,10 @@ export default function GameScreen() {
             aiActionAnim={aiActionAnim}
             viewportWidth={viewportWidth}
             tableCompact={tableCompact}
+            isLandscape={isLandscape}
             aiRefs={aiRefs}
             aiAvatarSz={alignment.aiAvatarSz}
+            dealerIndex={dealerIndex}
             aiCardW={alignment.aiCardW}
             aiCardH={alignment.aiCardH}
           />
@@ -2324,13 +2444,13 @@ export default function GameScreen() {
               display: 'flex',
               justifyContent: 'center',
               alignItems: 'center',
-              paddingTop: '8%',
+              paddingTop: '18%',
               paddingLeft: '5%',
               zIndex: 4,
               pointerEvents: 'none',
             }}
           >
-            <div style={{ pointerEvents: 'auto' }}>
+            <div style={{ pointerEvents: 'auto', touchAction: 'manipulation' }}>
               <CenterArea
                 wildJoker={wildJoker}
                 drawPile={drawPile}
@@ -2345,8 +2465,8 @@ export default function GameScreen() {
                 canDeclare={canDeclareMove}
                 drawPileRef={drawPileRef}
                 discardPileRef={discardPileRef}
-                cardW={cardW}
-                cardH={cardH}
+                cardW={Math.round(cardW * 0.75)}
+                cardH={Math.round(cardH * 0.75)}
               />
             </div>
           </div>
@@ -2361,7 +2481,7 @@ export default function GameScreen() {
           display: 'flex',
           flexDirection: 'column',
           gap: '3px',
-          padding: '8px 8px 6px',
+          padding: '16px 8px 6px',
           zIndex: 11,
           overflow: 'visible',
         }}
@@ -2371,8 +2491,7 @@ export default function GameScreen() {
           style={{
             display: 'flex',
             justifyContent: 'center',
-            overflowX: 'hidden',
-            overflowY: 'visible',
+            overflow: 'visible',   // allow selected card to lift without clipping
           }}
         >
           <PlayerHand
@@ -2399,103 +2518,137 @@ export default function GameScreen() {
             dragOverIdx={dragOverIdx}
             groupFlash={groupFlash}
             canInteract={canSelectCard}
+            canDiscard={canDiscardMove}
+            discardPileRef={discardPileRef}
+            onDiscard={discardCard}
             viewportWidth={viewportWidth}
             viewportHeight={viewportHeight}
           />
         </div>
 
-        {/* Bottom row: "Open Cards" button + Player seat + Controls */}
+        {/* Bottom row: Sort+Drop LEFT | pts label CENTER | Avatar+info RIGHT | Group+Discard+Declare FAR RIGHT */}
         <div
           style={{
             display: 'flex',
             justifyContent: 'space-between',
             alignItems: 'center',
-            gap: 6,
+            gap: 4,
             width: '100%',
           }}
         >
-            {/* Center: Player seat — YOU ★0 PRACTICE (matching reference) */}
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 6,
-              flexShrink: 0,
-            }}
-          >
-            {/* Avatar */}
-            <motion.div
-              style={{
-                width: 44,
-                height: 44,
-                borderRadius: '50%',
-                background: 'radial-gradient(circle at 38% 32%, #b0b0b0 0%, #888 40%, #555 100%)',
-                border: `2.5px solid ${isPlayerTurn ? '#F5C518' : 'rgba(255,255,255,0.3)'}`,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                fontSize: 20,
-                boxShadow: isPlayerTurn
-                  ? '0 0 0 3px rgba(245,197,24,0.4), 0 4px 12px rgba(0,0,0,0.6)'
-                  : '0 4px 12px rgba(0,0,0,0.5)',
-                flexShrink: 0,
-              }}
-              animate={
-                isPlayerTurn
-                  ? {
-                      boxShadow: [
-                        '0 0 0 0 rgba(245,197,24,0.5), 0 4px 12px rgba(0,0,0,0.6)',
-                        '0 0 0 8px rgba(245,197,24,0), 0 4px 12px rgba(0,0,0,0.6)',
-                        '0 0 0 0 rgba(245,197,24,0.5), 0 4px 12px rgba(0,0,0,0.6)',
-                      ],
-                    }
-                  : {}
-              }
-              transition={
-                isPlayerTurn
-                  ? { duration: 1.4, repeat: Infinity, ease: 'easeInOut' }
-                  : {}
-              }
-            >
-              👤
-            </motion.div>
+          {/* LEFT: Sort + Drop */}
+          <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+            <Controls
+              playerScore={playerScore}
+              gameState={gameState}
+              selectedCard={selectedCard}
+              hasDrawn={hasDrawn}
+              declaration={declaration}
+              onDeclare={() => {}}
+              onDropGame={dropGame}
+              onSort={sortHand}
+              onGroup={() => {}}
+              onDiscard={() => {}}
+              isPlayerTurn={isPlayerTurn}
+              canDropMove={canDropMove}
+              canSortMove={canSortMove}
+              canGroupMove={false}
+              canDiscardMove={false}
+              canDeclareMove={false}
+              viewportWidth={viewportWidth}
+              viewportHeight={viewportHeight}
+              compactMode={alignment.compactMode}
+              smallMode={alignment.smallMode}
+              avatarSize={alignment.avatarSize}
+              buttonHeight={38}
+              buttonMinWidth={38}
+              buttonPadding="0"
+              showOnly={['sort', 'drop']}
+            />
+          </div>
 
-            {/* Name + score label (black pill like reference) */}
-            <div
-              style={{
+          {/* RIGHT SIDE: Avatar + info + Group/Discard/Declare */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 110, flexShrink: 0 }}>
+            {/* Avatar + name pill */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+              {/* Avatar with circular turn timer */}
+              <div style={{ position: 'relative', width: 52, height: 52, flexShrink: 0 }}>
+                {/* Gold crown — shown when this player is the dealer */}
+                {dealerIndex === 0 && (
+                  <div style={{
+                    position: 'absolute',
+                    top: -14,
+                    left: '50%',
+                    transform: 'translateX(-50%)',
+                    fontSize: 26,
+                    lineHeight: 1,
+                    zIndex: 20,
+                    filter: 'drop-shadow(0 2px 4px rgba(0,0,0,0.9))',
+                    pointerEvents: 'none',
+                    userSelect: 'none',
+                  }}>
+                    👑
+                  </div>
+                )}
+                <PlayerCircularTimer
+                  size={52}
+                  strokeWidth={4}
+                  secondsLeft={
+                    !isPlayerTurn ? 30
+                    : timerPhase === 'penalty' ? penaltyTimer
+                    : turnTimer
+                  }
+                  totalSeconds={timerPhase === 'penalty' ? 10 : 30}
+                  phase={timerPhase === 'penalty' ? 'penalty' : 'main'}
+                />
+                <motion.div
+                  style={{
+                    width: 52,
+                    height: 52,
+                    borderRadius: '50%',
+                    background: '#ffffff',
+                    border: '2px solid rgba(255,255,255,0.9)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    fontSize: 24,
+                    boxShadow: '0 2px 8px rgba(0,0,0,0.6)',
+                  }}
+                >
+                  👤
+                </motion.div>
+              </div>
+              <div style={{
                 background: 'rgba(0,0,0,0.88)',
                 borderRadius: 5,
-                padding: '4px 10px',
+                padding: '3px 8px',
                 display: 'flex',
                 flexDirection: 'column',
                 alignItems: 'flex-start',
-                minWidth: 70,
-              }}
-            >
-              <span style={{ color: '#fff', fontSize: 11, fontWeight: 800, lineHeight: 1.2 }}>
-                {user?.name || 'YOU'}
-              </span>
-              <span style={{ color: '#F5C518', fontSize: 10, fontWeight: 800, lineHeight: 1.2 }}>
-                ★{playerScore}
-              </span>
-              <span style={{ color: 'rgba(255,255,255,0.6)', fontSize: 9, fontWeight: 700, lineHeight: 1.2 }}>
-                Hand: {calcScore(playerHand)}pts
-              </span>
-              <span
-                style={{
-                  color: playerDropped ? '#ef5350' : isPlayerTurn ? '#4caf50' : 'rgba(255,255,255,0.5)',
-                  fontSize: 9,
-                  fontWeight: 700,
-                  letterSpacing: '0.5px',
-                }}
-              >
-                {playerDropped ? 'DROPPED · SITTING OUT' : isPlayerTurn ? `YOUR TURN · ${turnTimer}s` : 'PRACTICE'}
-              </span>
+              }}>
+                <span style={{ color: '#fff', fontSize: 10, fontWeight: 800, lineHeight: 1.2 }}>
+                  {user?.name || 'YOU'}
+                </span>
+                <span style={{ color: '#F5C518', fontSize: 9, fontWeight: 800, lineHeight: 1.2 }}>
+                  ★{playerScore}
+                </span>
+                <span style={{ color: 'rgba(255,255,255,0.6)', fontSize: 8, fontWeight: 700, lineHeight: 1.2 }}>
+                  Hand: {calcScore(playerHand)}pts
+                </span>
+                <span style={{
+                  color: playerDropped ? '#ef5350' : isPlayerTurn ? (timerPhase === 'penalty' ? '#ff4444' : '#4caf50') : 'rgba(255,255,255,0.5)',
+                  fontSize: 8, fontWeight: 700,
+                }}>
+                  {playerDropped ? 'DROPPED' : isPlayerTurn
+                    ? timerPhase === 'penalty'
+                      ? `EXTRA · ${penaltyTimer}s`
+                      : `YOUR TURN · ${turnTimer}s`
+                    : 'PRACTICE'}
+                </span>
+              </div>
             </div>
-          </div>
 
-          {/* Right: Controls */}
-          <div style={{ flexShrink: 0 }}>
+            {/* Group + Discard + Declare */}
             <Controls
               playerScore={playerScore}
               gameState={gameState}
@@ -2503,13 +2656,13 @@ export default function GameScreen() {
               hasDrawn={hasDrawn}
               declaration={declaration}
               onDeclare={declare}
-              onDropGame={dropGame}
-              onSort={sortHand}
+              onDropGame={() => {}}
+              onSort={() => {}}
               onGroup={groupHand}
               onDiscard={discardCard}
               isPlayerTurn={isPlayerTurn}
-              canDropMove={canDropMove}
-              canSortMove={canSortMove}
+              canDropMove={false}
+              canSortMove={false}
               canGroupMove={canGroupMove}
               canDiscardMove={canDiscardMove}
               canDeclareMove={canDeclareMove}
@@ -2518,9 +2671,10 @@ export default function GameScreen() {
               compactMode={alignment.compactMode}
               smallMode={alignment.smallMode}
               avatarSize={alignment.avatarSize}
-              buttonHeight={alignment.buttonHeight}
-              buttonMinWidth={alignment.buttonMinWidth}
-              buttonPadding={alignment.buttonPadding}
+              buttonHeight={38}
+              buttonMinWidth={38}
+              buttonPadding="0"
+              showOnly={['group', 'discard', 'declare']}
             />
           </div>
         </div>
@@ -2531,8 +2685,6 @@ export default function GameScreen() {
       {/* 🔥 ALL OVERLAYS MUST BE INSIDE ROOT */}
 
       <AnimationLayer animations={layerAnimations} onComplete={removeAnim} />
-
-      {toast && <div className="toast-notification">{toast}</div>}
 
 
 

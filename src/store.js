@@ -112,7 +112,7 @@ const normalizeGameState = (state) => {
 
 const useGameStore = create((set, get) => ({
   // Navigation
-  screen: 'splash', // home | splash | otp | match-lobby | private-room | join-room | subscription | game | results
+  screen: 'splash', // home | splash | otp | match-lobby | private-room | join-room | subscription | game | profile | practice-mode | results
 
   // Lobby flow context (UI only)
   lobbyFlow: null, // null | 'create' | 'join'
@@ -124,10 +124,16 @@ const useGameStore = create((set, get) => ({
   phone: '',
   coins: 5000,
   isLoggedIn: false,
+
+  // Profile
+  profileName: '',
+  profileGender: '',   // 'male' | 'female' | 'other' | ''
+  profileEmail: '',
+  profileAvatar: null, // emoji string e.g. '🧑'
   
   // Lobby
   gameMode: null, // '101pool' | 'private'
-  tableSize: 6, // Fixed 6 players
+  tableSize: 6, // 2 or 6
   entryFee: 100,
   
   // Private room
@@ -165,7 +171,14 @@ const useGameStore = create((set, get) => ({
   setPhone: (phone) => set({ phone }),
   setCoins: (coins) => set({ coins }),
   setGameMode: (mode) => set({ gameMode: mode }),
+  setTableSize: (size) => set({ tableSize: size }),
   setEntryFee: (fee) => set({ entryFee: fee }),
+  setProfile: ({ name, gender, email, avatar } = {}) => set(s => ({
+    profileName: name !== undefined ? name : s.profileName,
+    profileGender: gender !== undefined ? gender : s.profileGender,
+    profileEmail: email !== undefined ? email : s.profileEmail,
+    profileAvatar: avatar !== undefined ? avatar : s.profileAvatar,
+  })),
   setPrivateRoomCode: (code) => set({ privateRoomCode: code }),
   setActiveRoomCode: (code) => set({ activeRoomCode: code }),
   setGameState: (state) => set({ gameState: normalizeGameState(state) }),

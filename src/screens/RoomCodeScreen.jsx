@@ -34,67 +34,20 @@ export default function RoomCodeScreen() {
     if (registering) return
     setRegistering(true)
 
-    const doRegister = (s) => {
-      let navigated = false
-
-      const proceed = () => {
-        if (navigated) return
-        navigated = true
-        setEntryFee(500)
-        deductCoins(500)
-        setLobbyFlow('create')
-        setIsRoomHost(true)
-        setScreen('match-lobby')
-      }
-
-      const handleRegistered = ({ code: registeredCode }) => {
-        if (registeredCode !== code) return
-        console.log('[RoomCodeScreen] room_registered received:', registeredCode)
-        clearTimeout(timeoutRef.current)
-        proceed()
-      }
-
-      // Attach listener BEFORE emitting — prevents race condition
-      s.off('room_registered', handleRegistered)   // clear any stale listener first
-      s.once('room_registered', handleRegistered)
-
-      // Timeout set AFTER listener is attached
-      timeoutRef.current = setTimeout(() => {
-        console.warn('[RoomCodeScreen] room_registered ack timeout — navigating anyway')
-        s.off('room_registered', handleRegistered)
-        proceed()
-      }, 1500)
-
-      // Emit only when socket is fully connected
-      const emitRegister = () => {
-        const playerId = getOrCreatePlayerId()
-        console.log('REGISTER SENT:', code, '| playerId:', playerId)
-        s.emit('register_room', { code, playerName, playerId })
-      }
-
-      console.log('[RoomCodeScreen] socket.connected:', s.connected)
-
-      if (s.connected) {
-        emitRegister()
-      } else {
-        console.warn('[RoomCodeScreen] socket not connected, waiting...')
-        s.once('connect', () => {
-          console.log('[RoomCodeScreen] socket reconnected, emitting register_room')
-          emitRegister()
-        })
-      }
-    }
-
+    // Register room on the server so joiners can find it
     const s = socketService.getSocket()
-
-    if (!s) {
-      console.error('[RoomCodeScreen] No socket instance available')
-      setRegistering(false)
-      return
+    if (s?.connected) {
+      const playerId = getOrCreatePlayerId()
+      const pName = user?.name || useGameStore.getState().profileName || 'Host'
+      s.emit('register_room', { code, playerName: pName, playerId })
+      console.log('[RoomCodeScreen] register_room emitted:', code, 'playerId:', playerId)
     }
 
-    console.log('CLIENT SOCKET ID:', s.id)
-    doRegister(s)
+    setEntryFee(500)
+    deductCoins(500)
+    setLobbyFlow('create')
+    setIsRoomHost(true)
+    setScreen('match-lobby')
   }
 
   return (

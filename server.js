@@ -189,7 +189,6 @@ io.on('connection', (socket) => {
       if (room.hostPlayerId === playerId) {
         room.host = socket.id;
       }
-      // Re-join the Socket.IO room channel so broadcasts reach this socket
       socket.join(code);
     }
 
@@ -216,33 +215,43 @@ io.on('connection', (socket) => {
       console.log('❌ Game already exists for:', code);
       return;
     }
-    console.log('Creating game...');
 
-    const deck = shuffle(buildDeck());
-    const players = room.players;
-    const hands = {};
-    let cursor = 0;
+    // ── Emit game_starting countdown to all players in the room ──
+    console.log('⏳ Starting 10-second countdown for room:', code);
+    io.to(code).emit('game_starting', { code, countdown: 10 });
 
-    for (const player of players) {
-      hands[player.id] = deck.slice(cursor, cursor + 13);
-      cursor += 13;
-    }
+    // ── After 10 seconds, create the game and broadcast game_state ──
+    setTimeout(() => {
+      // Double-check game hasn't been created already (e.g. duplicate start)
+      if (games[code]) return;
 
-    const remaining = deck.slice(cursor);
-    const firstDiscard = remaining.shift();
+      console.log('Creating game after countdown...');
+      const deck = shuffle(buildDeck());
+      const players = room.players;
+      const hands = {};
+      let cursor = 0;
 
-    games[code] = {
-      players,
-      deck:        remaining,
-      hands,
-      discardPile: firstDiscard ? [firstDiscard] : [],
-      turnIndex:   0,
-      state:       'playing',
-    };
+      for (const player of players) {
+        hands[player.id] = deck.slice(cursor, cursor + 13);
+        cursor += 13;
+      }
 
-    console.log('✅ Game created:', code, '— players:', players.length);
-    console.log('📡 Broadcasting game_state...');
-    broadcastGameState(code);
+      const remaining = deck.slice(cursor);
+      const firstDiscard = remaining.shift();
+
+      games[code] = {
+        players,
+        deck:        remaining,
+        hands,
+        discardPile: firstDiscard ? [firstDiscard] : [],
+        turnIndex:   0,
+        state:       'playing',
+      };
+
+      console.log('✅ Game created:', code, '— players:', players.length);
+      console.log('📡 Broadcasting game_state...');
+      broadcastGameState(code);
+    }, 10000); // 10-second delay
   });
 
   // ── draw_card ──────────────────────────────────────────────────────────────

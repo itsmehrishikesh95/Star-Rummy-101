@@ -1,7 +1,8 @@
 import React from 'react'
 import { getCardImage } from '../utils/cardImage'
 import { motion } from 'framer-motion'
-import cardBackImg from '../assets/card-back.png'
+import cardBackImg from '../assets/Star_Rummy_card.png'
+import jokerHatImg from '../assets/Joker_hat.png'
 
 // Dark green card back (matching reference)
 function CardBack({ onClick = null, style = {}, stackOffset = false }) {
@@ -30,23 +31,48 @@ function CardBack({ onClick = null, style = {}, stackOffset = false }) {
 // White face card — uses new 52_cards_png images
 function CardFace({ card, selected = false, style = {}, onClick, cW = 72, cH = 100 }) {
   if (!card) return null
+  const isJokerCard = card.isWildJoker || card.isJoker
   return (
     <div
       onClick={onClick}
       style={{
         width: '100%', height: '100%',
         borderRadius: 6,
-        boxShadow: selected ? '0 0 0 2.5px #F5C518, 0 6px 18px rgba(0,0,0,0.45)' : '0 4px 12px rgba(0,0,0,0.3)',
+        boxShadow: isJokerCard
+          ? '0 0 0 2px #FFD700, 0 0 8px 2px rgba(255,215,0,0.55), 0 4px 12px rgba(0,0,0,0.3)'
+          : selected
+            ? '0 0 0 2.5px #F5C518, 0 6px 18px rgba(0,0,0,0.45)'
+            : '0 4px 12px rgba(0,0,0,0.3)',
         cursor: onClick ? 'pointer' : 'default',
-        userSelect: 'none', overflow: 'hidden',
+        userSelect: 'none',
+        overflow: 'visible',
+        position: 'relative',
         ...style,
       }}
     >
-      <img
-        src={getCardImage(card.rank, card.suit)}
-        style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block', borderRadius: 6 }}
-        draggable={false}
-      />
+      <div style={{ width: '100%', height: '100%', borderRadius: 6, overflow: 'hidden' }}>
+        <img
+          src={getCardImage(card.rank, card.suit)}
+          style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block', borderRadius: 6 }}
+          draggable={false}
+        />
+      </div>
+      {isJokerCard && (
+        <img
+          src={jokerHatImg}
+          draggable={false}
+          style={{
+            position: 'absolute',
+            top: -38,
+            left: -30,
+            width: Math.round(cW * 0.95),
+            height: 'auto',
+            pointerEvents: 'none',
+            zIndex: 10,
+            filter: 'drop-shadow(0 1px 3px rgba(0,0,0,0.7))',
+          }}
+        />
+      )}
     </div>
   )
 }
@@ -149,7 +175,9 @@ export default function CenterArea({
               height: cH,
               zIndex: 3,
               cursor: canDrawClosed ? 'pointer' : 'not-allowed',
+              touchAction: 'manipulation',
             }}
+            onTouchEnd={canDrawClosed ? (e) => { e.preventDefault(); onDrawClosed && onDrawClosed() } : undefined}
           >
             <CardBack
               onClick={canDrawClosed ? onDrawClosed : undefined}
@@ -175,7 +203,9 @@ export default function CenterArea({
             width: cW,
             height: cH,
             cursor: canDrawOpen ? 'pointer' : 'default',
+            touchAction: 'manipulation',
           }}
+          onTouchEnd={canDrawOpen ? (e) => { e.preventDefault(); onDrawOpen && onDrawOpen() } : undefined}
         >
           {topCard ? (
             <CardFace

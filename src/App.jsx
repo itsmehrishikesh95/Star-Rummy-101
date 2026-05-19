@@ -7,8 +7,17 @@ import SubscriptionScreen from './screens/SubscriptionScreen'
 import GameScreen from './screens/GameScreen'
 import MatchLobbyScreen from './screens/MatchLobbyScreen'
 import MainMenu from './screens/MainMenu'
+import ProfileScreen from './screens/ProfileScreen'
+import PracticeModeScreen from './screens/PracticeModeScreen'
 import { Capacitor } from '@capacitor/core'
 import { ScreenOrientation } from '@capacitor/screen-orientation'
+
+// Hide the status bar when in game, restore it otherwise
+function setStatusBar(hidden) {
+  if (!Capacitor.isNativePlatform()) return
+  // StatusBar control is handled via capacitor.config.json (overlaysWebView: true)
+  // No plugin import needed — CSS game-fullscreen class handles the visual fill
+}
 import socketService from './services/socket'
 import RoomCodeScreen from './screens/RoomCodeScreen'
 
@@ -218,9 +227,18 @@ export default function App() {
     if (Capacitor.isNativePlatform()) {
       if (isGame) {
         ScreenOrientation.lock({ orientation: 'landscape' }).catch(console.error)
+        setStatusBar(true)   // hide status bar in game → full screen
       } else {
         ScreenOrientation.lock({ orientation: 'portrait' }).catch(console.error)
+        setStatusBar(false)  // restore status bar outside game
       }
+    }
+
+    // Toggle full-screen body class for CSS safe-area override
+    if (isGame) {
+      document.body.classList.add('game-fullscreen')
+    } else {
+      document.body.classList.remove('game-fullscreen')
     }
 
     if (typeof window !== 'undefined') {
@@ -270,32 +288,57 @@ export default function App() {
     }
 
     switch (screen) {
-      case 'home':         return <MainMenu />
-      case 'splash':       return <SplashScreen />
-      case 'otp':          return <Login />
-      case 'room-code':    return <RoomCodeScreen />
-      case 'match-lobby':  return <MatchLobbyScreen />
-      case 'private-room': return <PrivateRoomScreen />
-      case 'join-room':    return <JoinRoomScreen />
-      case 'subscription': return <SubscriptionScreen />
-      case 'game':         return <GameEntryGate />
-      default:             return <MainMenu />
+      case 'home':          return <MainMenu />
+      case 'splash':        return <SplashScreen />
+      case 'otp':           return <Login />
+      case 'profile':       return <ProfileScreen />
+      case 'practice-mode': return <PracticeModeScreen />
+      case 'room-code':     return <RoomCodeScreen />
+      case 'match-lobby':   return <MatchLobbyScreen />
+      case 'private-room':  return <PrivateRoomScreen />
+      case 'join-room':     return <JoinRoomScreen />
+      case 'subscription':  return <SubscriptionScreen />
+      case 'game':          return <GameEntryGate />
+      default:              return <MainMenu />
     }
   }
 
   // ── GAME: fills entire browser window ──
   if (isGame) {
     return (
-      <div style={{ width:'100vw', height:'100vh', overflow:'hidden', background:'#000', position:'relative' }}>
+      <div style={{
+        width: '100dvw',
+        height: '100dvh',
+        overflow: 'hidden',
+        background: '#000',
+        position: 'relative',
+      }}>
         {renderScreen()}
       </div>
     )
   }
 
-  // ── ALL OTHER SCREENS: 390×844 portrait shell centered on desktop ──
+  // ── ALL OTHER SCREENS: full screen on mobile, phone shell on desktop ──
   const isDesktop = !Capacitor.isNativePlatform()
     && window.innerWidth > 430
     && window.matchMedia('(pointer: fine)').matches
+
+  // Mobile: render full screen, no wrapper
+  if (!isDesktop) {
+    return (
+      <div style={{
+        width: '100vw',
+        height: '100dvh',
+        overflow: 'hidden',
+        background: '#0D3320',
+        position: 'relative',
+      }}>
+        {renderScreen()}
+      </div>
+    )
+  }
+
+  // Desktop: centered phone shell
   return (
     <div style={{
       width: '100vw',
@@ -308,15 +351,13 @@ export default function App() {
     }}>
       <div style={{
         position: 'relative',
-        width: isDesktop ? 390 : '100vw',
-        height: isDesktop ? Math.min(844, window.innerHeight) : '100vh',
+        width: 390,
+        height: Math.min(844, window.innerHeight),
         maxWidth: '100vw',
         maxHeight: '100vh',
         overflow: 'hidden',
-        borderRadius: isDesktop ? 44 : 0,
-        boxShadow: isDesktop
-          ? '0 0 0 1px rgba(255,255,255,0.08), 0 30px 80px rgba(0,0,0,0.8)'
-          : 'none',
+        borderRadius: 44,
+        boxShadow: '0 0 0 1px rgba(255,255,255,0.08), 0 30px 80px rgba(0,0,0,0.8)',
         background: '#0D3320',
       }}>
         {renderScreen()}
