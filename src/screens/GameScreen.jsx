@@ -579,39 +579,61 @@ export default function GameScreen() {
   useEffect(() => {
     if (!isMultiplayer) return
     const s = socketService.socket
-    if (!s?.connected) return
+    if (!s?.connected) {
+      // Socket not connected yet — retry after a short delay
+      const retryTimer = setTimeout(() => {
+        const sock = socketService.socket
+        if (sock?.connected) {
+          sock.emit('request_game_state', { code: activeRoomCode, playerId: '' })
+        }
+      }, 1000)
+      return () => clearTimeout(retryTimer)
+    }
 
     const mySocketId = s.id
     console.log('[GameScreen] Multiplayer mode active', { code: activeRoomCode, mySocketId })
 
+    // Convert server suit format (S/H/D/C) to client format (♠/♥/♦/♣)
+    const suitToUnicode = { S: '♠', H: '♥', D: '♦', C: '♣' }
+    function convertCard(card) {
+      if (!card) return card
+      return {
+        ...card,
+        suit: suitToUnicode[card.suit] || card.suit,
+        pts: ['A', 'J', 'Q', 'K', '10'].includes(card.rank) ? 10 : (parseInt(card.rank) || 0),
+      }
+    }
+
     const cleanup = subscribeToGame(activeRoomCode, mySocketId, {
       onGameState: (data) => {
-        const myHand = data.hand || []
+        const rawHand = data.hand || []
+        const myHand = rawHand.map(convertCard)
 
         setPlayerHand(myHand)
-        setDiscardPile(data.discardPile || [])
+        setDiscardPile((data.discardPile || []).map(convertCard))
         setDrawPile([])  // server manages the deck; we only show deckSize
+        setWildJoker(null) // no wild joker in multiplayer for now
 
-        // Map server player index to local currentTurn (0 = me, 1+ = AI)
+        // Map server player index to local currentTurn (0 = me, 1+ = others)
         const myIndex = (data.players || []).findIndex(p => p.id === mySocketId)
         const serverTurnIndex = (data.players || []).findIndex(p => p.id === data.currentTurn)
-        const localTurn = serverTurnIndex === myIndex ? 0 : serverTurnIndex
+        const localTurn = serverTurnIndex === myIndex ? 0 : (serverTurnIndex >= 0 ? serverTurnIndex : 0)
         setCurrentTurn(localTurn)
         currentTurnRef.current = localTurn
 
-        // Build AI player list from server data (everyone except me)
+        // Build opponent player list from server data (everyone except me)
         const aiData = (data.players || [])
           .filter(p => p.id !== mySocketId)
           .map((p, i) => ({
             id: i,
-            name: p.name,
+            name: p.name || `Player ${i + 1}`,
             hand: new Array(p.handSize || 0).fill({ id: `hidden-${i}`, rank: '?', suit: '?' }),
             score: 0,
             isEliminated: false,
           }))
         setAiPlayers(aiData)
 
-        // Derive local game phase from hand size
+        // Derive local game phase from turn and hand size
         const myTurn = data.currentTurn === mySocketId
         if (myTurn && myHand.length <= 13) {
           setGameState('draw')
@@ -619,12 +641,20 @@ export default function GameScreen() {
         } else if (myTurn && myHand.length === 14) {
           setGameState('discard')
           setHasDrawn(true)
+        } else {
+          // Not my turn — show waiting state (not 'dealing')
+          setGameState('draw')
+          setHasDrawn(false)
         }
+
+        // Mark dealing as complete
+        setDealtCount(13)
 
         console.log('[GameScreen] game_state synced', {
           myTurn,
           handSize: myHand.length,
           currentTurn: data.currentTurn,
+          players: data.players?.length,
         })
       },
 
@@ -701,6 +731,9 @@ export default function GameScreen() {
 
   // ── INIT / DEAL ANIMATION ──
   useEffect(() => {
+    // Skip local init in multiplayer — server provides game state
+    if (isMultiplayer) return
+
     console.log('INIT EFFECT TRIGGERED')
     const numPlayers = tableSize
     // Use 2 decks for 6 players, 1 deck for 2 players

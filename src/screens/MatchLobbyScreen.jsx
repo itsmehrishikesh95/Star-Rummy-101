@@ -184,8 +184,10 @@ export default function MatchLobbyScreen() {
     if (!isRoomHost && activeRoomCode) {
       const state = useGameStore.getState()
       const playerName = state.user?.name || state.profileName || 'Player'
-      s.emit('join_room', { code: activeRoomCode, playerName })
-      console.log('[Lobby] join_room emitted on mount:', activeRoomCode)
+      import('../services/gameSocket').then(({ getOrCreatePlayerId }) => {
+        s.emit('join_room', { code: activeRoomCode, playerName, playerId: getOrCreatePlayerId() })
+        console.log('[Lobby] join_room emitted on mount:', activeRoomCode)
+      })
     }
 
     // ── Listen for game_error so host sees why start failed ──

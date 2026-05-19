@@ -26,12 +26,25 @@ const RANKS = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K']
 
 function buildDeck() {
   const deck = [];
+  let id = 0;
   for (const suit of SUITS) {
     for (const rank of RANKS) {
-      deck.push({ id: `${rank}${suit}`, rank, suit });
+      deck.push({ id: `${rank}${suit}_${id++}`, rank, suit });
     }
   }
   return deck;
+}
+
+function buildTwoDecks() {
+  const deck1 = buildDeck();
+  const deck2 = [];
+  let id = 100;
+  for (const suit of SUITS) {
+    for (const rank of RANKS) {
+      deck2.push({ id: `${rank}${suit}_${id++}`, rank, suit });
+    }
+  }
+  return [...deck1, ...deck2];
 }
 
 function shuffle(deck) {
@@ -130,17 +143,17 @@ io.on('connection', (socket) => {
   });
 
   // ── join_room ──────────────────────────────────────────────────────────────
-  socket.on('join_room', ({ code, playerName }) => {
+  socket.on('join_room', ({ code, playerName, playerId }) => {
     if (!code || !rooms[code]) {
       socket.emit('room_error', { message: 'Room not found.' });
       return;
     }
 
-    const alreadyIn = rooms[code].players.some((p) => p.id === socket.id);
+    const alreadyIn = rooms[code].players.some((p) => p.id === socket.id || (playerId && p.playerId === playerId));
     if (!alreadyIn) {
-      rooms[code].players.push({ id: socket.id, name: playerName || 'Player' });
+      rooms[code].players.push({ id: socket.id, playerId: playerId || socket.id, name: playerName || 'Player' });
       socket.join(code);
-      console.log(`[join_room]  socket.id=${socket.id} name="${playerName}" code="${code}"`);
+      console.log(`[join_room]  socket.id=${socket.id} name="${playerName}" playerId="${playerId}" code="${code}"`);
     }
 
     console.log('Rooms:', Object.keys(rooms));
@@ -155,10 +168,14 @@ io.on('connection', (socket) => {
   socket.on('request_game_state', ({ code, playerId }) => {
     const game = games[code];
     if (!game) return;
-    console.log(`[request_game_state] code="${code}" socket.id=${socket.id}`);
+    console.log(`[request_game_state] code="${code}" socket.id=${socket.id} playerId="${playerId}"`);
 
-    // Rebind socket if reconnected
-    const player = game.players.find(p => p.playerId === playerId);
+    // Find player by playerId OR by socket.id (fallback for joiners without playerId)
+    let player = game.players.find(p => p.playerId === playerId);
+    if (!player) {
+      player = game.players.find(p => p.id === socket.id);
+    }
+
     if (player) {
       if (player.id !== socket.id) {
         player.id = socket.id;
@@ -166,6 +183,9 @@ io.on('connection', (socket) => {
       }
       const snapshot = buildSnapshot(game, socket.id);
       socket.emit('game_state', { code, ...snapshot });
+      console.log(`[request_game_state] sent game_state to socket.id=${socket.id}`);
+    } else {
+      console.log(`[request_game_state] player not found for socket.id=${socket.id} playerId="${playerId}"`);
     }
   });
 
@@ -226,7 +246,7 @@ io.on('connection', (socket) => {
       if (games[code]) return;
 
       console.log('Creating game after countdown...');
-      const deck = shuffle(buildDeck());
+      const deck = shuffle(room.players.length >= 5 ? buildTwoDecks() : buildDeck());
       const players = room.players;
       const hands = {};
       let cursor = 0;

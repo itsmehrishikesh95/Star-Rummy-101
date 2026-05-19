@@ -163,7 +163,7 @@ export function JoinRoomScreen() {
     if (s?.connected) {
       const state = useGameStore.getState()
       const playerName = state.user?.name || state.profileName || 'Player'
-      s.emit('join_room', { code: entered, playerName })
+      s.emit('join_room', { code: entered, playerName, playerId: getOrCreatePlayerId() })
       console.log('[JoinRoom] join_room emitted:', entered)
     }
 

@@ -81,9 +81,16 @@ function GameEntryGate() {
   const failGameLoading = useGameStore((s) => s.failGameLoading)
   const clearGameInitError = useGameStore((s) => s.clearGameInitError)
   const initializeMockGameData = useGameStore((s) => s.initializeMockGameData)
+  const activeRoomCode = useGameStore((s) => s.activeRoomCode)
   const watchdogRef = useRef(null)
   const initStartedRef = useRef(false)
   const [initTimeout, setInitTimeout] = useState(false)
+
+  // In multiplayer mode, skip all mock initialization — GameScreen handles server state
+  const isMultiplayer = !!activeRoomCode
+  if (isMultiplayer) {
+    return <GameScreen />
+  }
 
   const hasPlayerHand = Array.isArray(playerHand) && playerHand.length > 0
   const canRenderGame = isGameReady && hasPlayerHand && !!gameState
