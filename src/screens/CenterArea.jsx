@@ -2,7 +2,6 @@ import React from 'react'
 import { getCardImage } from '../utils/cardImage'
 import { motion } from 'framer-motion'
 import cardBackImg from '../assets/Star_Rummy_card.png'
-import jokerHatImg from '../assets/Joker_hat.png'
 
 // Dark green card back (matching reference)
 function CardBack({ onClick = null, style = {}, stackOffset = false }) {
@@ -11,6 +10,7 @@ function CardBack({ onClick = null, style = {}, stackOffset = false }) {
       src={cardBackImg} 
       alt="Card Back"
       onClick={onClick}
+      onTouchEnd={onClick ? (e) => { e.preventDefault(); onClick() } : undefined}
       draggable={false}
       style={{
         width: '100%',
@@ -22,6 +22,10 @@ function CardBack({ onClick = null, style = {}, stackOffset = false }) {
         outline: 'none',
         boxShadow: 'none',
         cursor: onClick ? 'pointer' : 'default',
+        touchAction: 'manipulation',
+        WebkitTapHighlightColor: 'transparent',
+        WebkitUserSelect: 'none',
+        userSelect: 'none',
         ...style
       }}
     />
@@ -35,44 +39,27 @@ function CardFace({ card, selected = false, style = {}, onClick, cW = 72, cH = 1
   return (
     <div
       onClick={onClick}
+      onTouchEnd={onClick ? (e) => { e.preventDefault(); onClick() } : undefined}
       style={{
         width: '100%', height: '100%',
         borderRadius: 6,
-        boxShadow: isJokerCard
-          ? '0 0 0 2px #FFD700, 0 0 8px 2px rgba(255,215,0,0.55), 0 4px 12px rgba(0,0,0,0.3)'
-          : selected
-            ? '0 0 0 2.5px #F5C518, 0 6px 18px rgba(0,0,0,0.45)'
-            : '0 4px 12px rgba(0,0,0,0.3)',
+        border: isJokerCard ? '2px solid #FFD700' : 'none',
+        boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
         cursor: onClick ? 'pointer' : 'default',
         userSelect: 'none',
-        overflow: 'visible',
+        WebkitUserSelect: 'none',
+        overflow: 'hidden',
         position: 'relative',
+        touchAction: 'manipulation',
+        WebkitTapHighlightColor: 'transparent',
         ...style,
       }}
     >
-      <div style={{ width: '100%', height: '100%', borderRadius: 6, overflow: 'hidden' }}>
-        <img
-          src={getCardImage(card.rank, card.suit)}
-          style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block', borderRadius: 6 }}
-          draggable={false}
-        />
-      </div>
-      {isJokerCard && (
-        <img
-          src={jokerHatImg}
-          draggable={false}
-          style={{
-            position: 'absolute',
-            top: -38,
-            left: -30,
-            width: Math.round(cW * 0.95),
-            height: 'auto',
-            pointerEvents: 'none',
-            zIndex: 10,
-            filter: 'drop-shadow(0 1px 3px rgba(0,0,0,0.7))',
-          }}
-        />
-      )}
+      <img
+        src={getCardImage(card.rank, card.suit)}
+        style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block', borderRadius: 4 }}
+        draggable={false}
+      />
     </div>
   )
 }
@@ -108,7 +95,7 @@ export default function CenterArea({
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        gap: 14,
+        gap: 24,
         zIndex: 4,
         position: 'relative',
         pointerEvents: 'auto',
@@ -116,178 +103,164 @@ export default function CenterArea({
         transition: 'opacity 0.3s ease',
       }}
     >
-      {/* ── DRAW PILE (closed deck) with Joker leaning on it ── */}
+      {/* ── CLOSED DECK (draw pile) with Joker leaning on LEFT side ── */}
       <div ref={drawPileRef} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
         <div style={{ position: 'relative', width: cW, height: cH }}>
           {/* Stack shadow cards */}
-          <div
-            style={{
-              position: 'absolute',
-              top: -4,
-              left: -4,
-              width: cW,
-              height: cH,
-              opacity: 0.4,
-            }}
-          >
+          <div style={{ position: 'absolute', top: -4, left: -4, width: cW, height: cH, opacity: 0.4 }}>
             <CardBack />
           </div>
-          <div
-            style={{
-              position: 'absolute',
-              top: -2,
-              left: -2,
-              width: cW,
-              height: cH,
-              opacity: 0.65,
-            }}
-          >
+          <div style={{ position: 'absolute', top: -2, left: -2, width: cW, height: cH, opacity: 0.65 }}>
             <CardBack />
           </div>
 
-          {/* Joker card leaning on draw pile (like reference) */}
+          {/* Wild Joker card perpendicular (90°) on LEFT side of closed deck */}
           {wildJoker && (
             <div
               style={{
                 position: 'absolute',
-                top: -8,
-                left: -14,
-                width: cW - 4,
-                height: cH - 4,
-                transform: 'rotate(-12deg)',
+                top: '50%',
+                left: -(cW * 0.45),
+                width: cW - 6,
+                height: cH - 6,
+                transform: 'translateY(-50%) rotate(-90deg)',
                 zIndex: 2,
+                pointerEvents: 'none',
               }}
             >
-              <CardFace card={wildJoker} cW={cW - 4} cH={cH - 4} />
+              <CardFace card={wildJoker} cW={cW - 6} cH={cH - 6} />
             </div>
           )}
 
-          {/* Main draw pile card */}
+          {/* Main draw pile card (clickable) — enlarged touch area */}
           <motion.div
             whileHover={canDrawClosed ? { y: -5, scale: 1.06 } : {}}
             whileTap={canDrawClosed ? { scale: 0.94 } : {}}
             transition={{ type: 'spring', stiffness: 380, damping: 18 }}
             style={{
               position: 'absolute',
-              top: 0,
-              left: 0,
-              width: cW,
-              height: cH,
+              top: -25, left: -25,
+              width: cW + 50, height: cH + 50,
               zIndex: 3,
               cursor: canDrawClosed ? 'pointer' : 'not-allowed',
               touchAction: 'manipulation',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
             }}
             onTouchEnd={canDrawClosed ? (e) => { e.preventDefault(); onDrawClosed && onDrawClosed() } : undefined}
           >
-            <CardBack
-              onClick={canDrawClosed ? onDrawClosed : undefined}
-              style={{
-                border: 'none',
-                boxShadow: canDrawClosed
-                  ? '0 0 18px rgba(245,197,24,0.45), 0 8px 20px rgba(0,0,0,0.6)'
-                  : '0 6px 16px rgba(0,0,0,0.7)',
-                opacity: canDrawClosed ? 1 : 0.55,
-              }}
-            />
+            <div style={{ width: cW, height: cH }}>
+              <CardBack
+                onClick={canDrawClosed ? onDrawClosed : undefined}
+                style={{
+                  border: 'none',
+                  boxShadow: '0 6px 16px rgba(0,0,0,0.7)',
+                  opacity: canDrawClosed ? 1 : 0.55,
+                }}
+              />
+            </div>
           </motion.div>
         </div>
       </div>
 
-      {/* ── OPEN DISCARD PILE (face-up top card) ── */}
+      {/* ── FINISH SLOT (declare zone) — card-shaped slot in the MIDDLE ── */}
+      <motion.div
+        onClick={canDeclare ? onDeclare : undefined}
+        onTouchEnd={canDeclare ? (e) => { e.preventDefault(); onDeclare && onDeclare() } : undefined}
+        whileHover={canDeclare ? { scale: 1.04, y: -3 } : {}}
+        whileTap={canDeclare ? { scale: 0.95 } : {}}
+        style={{
+          width: cW,
+          height: cH,
+          borderRadius: 7,
+          background: 'rgba(0,0,0,0.22)',
+          border: `2px dashed rgba(255,255,255,0.3)`,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          cursor: canDeclare ? 'pointer' : 'default',
+          boxShadow: 'inset 0 2px 8px rgba(0,0,0,0.3)',
+          flexDirection: 'column',
+          gap: 3,
+          touchAction: 'manipulation',
+          position: 'relative',
+          overflow: 'hidden',
+        }}
+      >
+        {/* Card-shaped inner indicator */}
+        <div style={{
+          width: cW * 0.5,
+          height: cH * 0.45,
+          borderRadius: 4,
+          border: '1.5px solid rgba(255,255,255,0.15)',
+          background: 'rgba(255,255,255,0.03)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          marginBottom: 2,
+        }}>
+          <span style={{ fontSize: 14, opacity: 0.4 }}>🃏</span>
+        </div>
+        <span
+          style={{
+            color: 'rgba(255,255,255,0.45)',
+            fontSize: 8,
+            fontWeight: 800,
+            textAlign: 'center',
+            letterSpacing: '0.5px',
+            textTransform: 'uppercase',
+          }}
+        >
+          Finish
+        </span>
+      </motion.div>
+
+      {/* ── OPEN DECK (discard pile — face-up top card) ── */}
       <div ref={discardPileRef} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
         <motion.div
           whileHover={canDrawOpen ? { y: -5, scale: 1.06 } : {}}
           whileTap={canDrawOpen ? { scale: 0.94 } : {}}
           transition={{ type: 'spring', stiffness: 380, damping: 18 }}
           style={{
-            width: cW,
-            height: cH,
+            width: cW + 50,
+            height: cH + 50,
+            padding: 25,
             cursor: canDrawOpen ? 'pointer' : 'default',
             touchAction: 'manipulation',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
           }}
           onTouchEnd={canDrawOpen ? (e) => { e.preventDefault(); onDrawOpen && onDrawOpen() } : undefined}
         >
-          {topCard ? (
-            <CardFace
-              card={topCard}
-              cW={cW}
-              cH={cH}
-              onClick={canDrawOpen ? onDrawOpen : undefined}
-              style={{
-                border: 'none',
-                boxShadow: canDrawOpen
-                  ? '0 0 18px rgba(245,197,24,0.45), 0 8px 20px rgba(0,0,0,0.5)'
-                  : '0 6px 16px rgba(0,0,0,0.5)',
-                opacity: canDrawOpen ? 1 : 0.55,
-              }}
-            />
-          ) : (
-            <div
-              style={{
-                width: '100%',
-                height: '100%',
-                borderRadius: 8,
-                background: 'rgba(0,0,0,0.25)',
-                border: '1.5px dashed rgba(255,255,255,0.2)',
-              }}
-            />
-          )}
+          <div style={{ width: cW, height: cH }}>
+            {topCard ? (
+              <CardFace
+                card={topCard}
+                cW={cW}
+                cH={cH}
+                onClick={canDrawOpen ? onDrawOpen : undefined}
+                style={{
+                  border: 'none',
+                  boxShadow: '0 6px 16px rgba(0,0,0,0.5)',
+                  opacity: canDrawOpen ? 1 : 0.55,
+                }}
+              />
+            ) : (
+              <div
+                style={{
+                  width: '100%',
+                  height: '100%',
+                  borderRadius: 7,
+                  background: 'rgba(0,0,0,0.25)',
+                  border: '1.5px dashed rgba(255,255,255,0.2)',
+                }}
+              />
+            )}
+          </div>
         </motion.div>
-
       </div>
-
-      {/* ── FINISH SLOT (declare zone) — yellow border, empty rectangle ── */}
-      <motion.div
-        onClick={canDeclare ? onDeclare : undefined}
-        whileHover={canDeclare ? { scale: 1.04, y: -3 } : {}}
-        whileTap={canDeclare ? { scale: 0.95 } : {}}
-        animate={
-          canDeclare
-            ? {
-                boxShadow: [
-                  '0 0 0 2px #F5C518, 0 0 18px rgba(245,197,24,0.3)',
-                  '0 0 0 3px #F5C518, 0 0 30px rgba(245,197,24,0.55)',
-                  '0 0 0 2px #F5C518, 0 0 18px rgba(245,197,24,0.3)',
-                ],
-              }
-            : {}
-        }
-        transition={
-          canDeclare
-            ? { duration: 1.4, repeat: Infinity, ease: 'easeInOut' }
-            : { duration: 0.3 }
-        }
-        style={{
-          width: cW + 4,
-          height: cH + 4,
-          borderRadius: 8,
-          background: 'rgba(0,0,0,0.18)',
-          border: `2.5px solid ${canDeclare ? '#F5C518' : 'rgba(245,197,24,0.55)'}`,
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          cursor: canDeclare ? 'pointer' : 'default',
-          boxShadow: canDeclare
-            ? '0 0 0 2px #F5C518, 0 0 18px rgba(245,197,24,0.3)'
-            : 'none',
-          flexDirection: 'column',
-          gap: 2,
-        }}
-      >
-        <span
-          style={{
-            color: canDeclare ? '#F5C518' : 'rgba(245,197,24,0.6)',
-            fontSize: 10,
-            fontWeight: 800,
-            textAlign: 'center',
-            lineHeight: 1.4,
-            letterSpacing: '0.3px',
-            whiteSpace: 'pre-line',
-          }}
-        >
-          {'Finish\nslot'}
-        </span>
-      </motion.div>
     </div>
   )
 }

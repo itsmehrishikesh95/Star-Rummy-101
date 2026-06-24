@@ -3,7 +3,6 @@ import { getCardImage } from '../utils/cardImage'
 import { motion } from 'framer-motion'
 import {
   DndContext,
-  DragOverlay,
   PointerSensor,
   TouchSensor,
   useDroppable,
@@ -17,8 +16,6 @@ import {
   horizontalListSortingStrategy,
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
-
-import jokerHatImg from '../assets/Joker_hat.png'
 
 const RANKS = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K']
 function asArray(v) { return Array.isArray(v) ? v : [] }
@@ -34,42 +31,23 @@ function CardFace({ card, selected = false, style = {}, onClick, width = 72, hei
       style={{
         width: '100%', height: '100%',
         borderRadius: 6,
-        boxShadow: isJokerCard
-          ? '0 0 0 2px #FFD700, 0 0 8px 2px rgba(255,215,0,0.55), 0 4px 12px rgba(0,0,0,0.3)'
-          : selected
-            ? '0 0 0 2.5px #F5C518, 0 6px 18px rgba(0,0,0,0.45)'
-            : '0 4px 12px rgba(0,0,0,0.3)',
+        border: isJokerCard ? '2px solid #FFD700' : 'none',
+        boxShadow: selected
+          ? '0 0 0 2px rgba(255,255,255,0.8), 0 6px 18px rgba(0,0,0,0.45)'
+          : '0 4px 12px rgba(0,0,0,0.3)',
         cursor: onClick ? 'pointer' : 'default',
         userSelect: 'none',
-        overflow: 'visible',
+        overflow: 'hidden',
         flexShrink: 0,
         position: 'relative',
         ...style,
       }}
     >
-      <div style={{ width: '100%', height: '100%', borderRadius: 6, overflow: 'hidden' }}>
-        <img
-          src={getCardImage(card.rank, card.suit)}
-          style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block', borderRadius: 6 }}
-          draggable={false}
-        />
-      </div>
-      {isJokerCard && (
-        <img
-          src={jokerHatImg}
-          draggable={false}
-          style={{
-            position: 'absolute',
-            top: -52,
-            left: -40,
-            width: Math.round(width * 0.95),
-            height: 'auto',
-            pointerEvents: 'none',
-            zIndex: 10,
-            filter: 'drop-shadow(0 1px 3px rgba(0,0,0,0.7))',
-          }}
-        />
-      )}
+      <img
+        src={getCardImage(card.rank, card.suit)}
+        style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block', borderRadius: 4 }}
+        draggable={false}
+      />
     </div>
   )
 }
@@ -128,24 +106,57 @@ function SortableCard({ card, selected, cardW, cardH, onClick, idx, overlapOffse
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: card.id })
   const ts = CSS.Transform.toString({ ...transform, scaleX: transform?.scaleX ?? 1, scaleY: transform?.scaleY ?? 1 })
 
+  // Tap detection via pointer tracking — works on all devices including Oppo/Vivo
+  const pointerStartRef = useRef(null)
+
+  const handlePointerDown = (e) => {
+    pointerStartRef.current = { x: e.clientX, y: e.clientY }
+  }
+
+  const handlePointerUp = (e) => {
+    if (!pointerStartRef.current) return
+    const dx = Math.abs(e.clientX - pointerStartRef.current.x)
+    const dy = Math.abs(e.clientY - pointerStartRef.current.y)
+    pointerStartRef.current = null
+    // If pointer moved less than 8px total, treat as tap
+    if (dx < 8 && dy < 8 && onClick) {
+      onClick()
+    }
+  }
+
+  // Extra touch padding around each card (increases touch target without changing card size)
+  const touchPadX = 8
+  const touchPadY = 12
+
   return (
     <div
       ref={setNodeRef}
       data-card-id={card.id}
       {...attributes}
-      {...listeners}
+      {...Object.fromEntries(Object.entries(listeners ?? {}).filter(([k]) => k !== 'onPointerDown'))}
+      onPointerDown={(e) => {
+        listeners?.onPointerDown?.(e);
+        handlePointerDown(e);
+      }}
+      onPointerUp={handlePointerUp}
       style={{
-        width: cardW,
-        height: cardH,
+        width: cardW + touchPadX * 2,
+        height: cardH + touchPadY * 2,
+        padding: `${touchPadY}px ${touchPadX}px`,
+        boxSizing: 'border-box',
         flexShrink: 0,
         position: 'relative',
-        marginLeft: idx === 0 ? 0 : -overlapOffset,
-        zIndex: isDragging ? 60 : selected ? 50 : idx + 1,
+        marginLeft: idx === 0 ? -touchPadX : -(overlapOffset + touchPadX * 2 - touchPadX),
+        marginTop: -touchPadY,
+        marginBottom: -touchPadY,
+        zIndex: isDragging ? 9999 : selected ? 50 : idx + 1,
         opacity: isDragging ? 0.85 : 1,
         transform: ts || undefined,
         transition,
-        touchAction: 'none',   // critical: lets dnd-kit own all touch events
+        touchAction: 'none',
         userSelect: 'none',
+        WebkitUserSelect: 'none',
+        WebkitTapHighlightColor: 'transparent',
       }}
     >
       <motion.div
@@ -155,74 +166,14 @@ function SortableCard({ card, selected, cardW, cardH, onClick, idx, overlapOffse
           : { y: 0, scale: 1 }
         }
         transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
-        style={{ width: '100%', height: '100%', borderRadius: 7 }}
+        style={{ width: cardW, height: cardH, borderRadius: 7 }}
       >
-        <CardFace card={card} selected={selected} onClick={onClick} width={cardW} height={cardH} />
+        <CardFace card={card} selected={selected} width={cardW} height={cardH} />
       </motion.div>
     </div>
   )
 }
 
-// ── Discard drop zone — fixed overlay over the discard pile, visible while dragging ──
-function DiscardDropZone({ discardRef, canDiscard, isDragging: anyDragging }) {
-  const { setNodeRef, isOver } = useDroppable({ id: 'discard-pile' })
-
-  const [rect, setRect] = useState(null)
-  useEffect(() => {
-    if (!discardRef?.current) return
-    const update = () => {
-      const r = discardRef.current?.getBoundingClientRect()
-      if (r) setRect({ top: r.top, left: r.left, width: r.width, height: r.height })
-    }
-    update()
-    window.addEventListener('resize', update)
-    window.addEventListener('scroll', update, true)
-    return () => {
-      window.removeEventListener('resize', update)
-      window.removeEventListener('scroll', update, true)
-    }
-  }, [discardRef, anyDragging])
-
-  if (!rect || !anyDragging || !canDiscard) return null
-
-  const pad = 24
-  return (
-    <>
-      {/* Actual droppable hit area — must have pointer-events so dnd-kit can detect it */}
-      <div
-        ref={setNodeRef}
-        style={{
-          position: 'fixed',
-          top: rect.top - pad,
-          left: rect.left - pad,
-          width: rect.width + pad * 2,
-          height: rect.height + pad * 2,
-          zIndex: 9997,
-          borderRadius: 12,
-          // transparent but pointer-events enabled so dnd-kit collision works
-          background: 'transparent',
-          pointerEvents: 'all',
-        }}
-      />
-      {/* Visual highlight — purely decorative, no pointer events */}
-      <div
-        style={{
-          position: 'fixed',
-          top: rect.top - pad,
-          left: rect.left - pad,
-          width: rect.width + pad * 2,
-          height: rect.height + pad * 2,
-          zIndex: 9998,
-          borderRadius: 12,
-          border: isOver ? '2.5px solid #F5C518' : '2px dashed rgba(245,197,24,0.55)',
-          background: isOver ? 'rgba(245,197,24,0.2)' : 'rgba(245,197,24,0.07)',
-          pointerEvents: 'none',
-          transition: 'all 0.15s ease',
-        }}
-      />
-    </>
-  )
-}
 
 // ── Group drop zone ──
 function GroupDropZone({ group, groupIndex, cardW, cardH, selectedCardId, selectedCardIds = [], onCardSelect }) {
@@ -247,12 +198,11 @@ function GroupDropZone({ group, groupIndex, cardW, cardH, selectedCardId, select
         style={{
           display: 'flex',
           alignItems: 'flex-end',
-          // No gap — overlap is handled by negative marginLeft on cards
           gap: 0,
-          padding: '28px 6px 4px',  // extra top padding so lifted/selected cards don't clip
+          padding: '28px 6px 4px',
           borderRadius: 9,
-          background: isOver ? 'rgba(245,197,24,0.12)' : 'transparent',
-          border: `1.5px ${isOver ? 'solid' : 'dashed'} ${isOver ? 'rgba(245,197,24,0.65)' : 'transparent'}`,
+          background: 'transparent',
+          border: '1.5px solid transparent',
           minHeight: cardH + 36,
           minWidth: safe.length > 0 ? groupVisualWidth + 12 : cardW + 12,
           overflow: 'visible',
@@ -278,22 +228,23 @@ function GroupDropZone({ group, groupIndex, cardW, cardH, selectedCardId, select
         )}
       </motion.div>
 
-      {/* Group label */}
-      <div style={{
-        padding: '1px 7px', borderRadius: 999,
-        background: ev.valid ? `${ev.color}28` : `${ev.color}38`,
-        border: `1.5px solid ${ev.color}60`,
-        minWidth: 44,
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-      }}>
-        <span style={{
-          color: ev.valid ? ev.color : '#fff',
-          fontSize: 8, fontWeight: 800, whiteSpace: 'nowrap',
-          textShadow: ev.valid ? 'none' : '0 1px 3px rgba(0,0,0,0.7)',
+      {/* Group label — shows Pure Seq, Sequence, Set, or points */}
+      {safe.length > 0 && (
+        <div style={{
+          padding: '1px 7px', borderRadius: 999,
+          background: ev.valid ? 'rgba(34,197,94,0.15)' : 'rgba(239,83,80,0.12)',
+          border: `1.5px solid ${ev.valid ? 'rgba(34,197,94,0.4)' : 'rgba(239,83,80,0.35)'}`,
+          minWidth: 44,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
         }}>
-          {ev.label}
-        </span>
-      </div>
+          <span style={{
+            color: ev.valid ? '#22c55e' : '#ef5350',
+            fontSize: 8, fontWeight: 800, whiteSpace: 'nowrap',
+          }}>
+            {ev.label}
+          </span>
+        </div>
+      )}
     </div>
   )
 }
@@ -335,22 +286,34 @@ export default function PlayerHand({
   // When playerHand changes externally (deal/draw/discard), preserve group structure.
   // Do NOT auto-sort or auto-group — that only happens when Sort is pressed.
   useEffect(() => {
-    const newIds = asArray(playerHand).filter(Boolean).map(c => c.id).join(',')
-    if (newIds === prevFlatIdsRef.current) return
+    const newCards = asArray(playerHand).filter(Boolean)
+    const newIdSet = new Set(newCards.map(c => c.id))
+    const newIds = [...newIdSet].sort().join(',')
+    
+    // Use sorted IDs for comparison — order changes (from sort) should NOT trigger regrouping
+    const prevIds = prevFlatIdsRef.current
+    if (newIds === prevIds) return
     prevFlatIdsRef.current = newIds
 
-    const newCards = asArray(playerHand).filter(Boolean)
     const newCardMap = new Map(newCards.map(c => [c.id, c]))
 
     setHandGroups(prev => {
+      // Check if it's just a reorder (same cards, different order) — preserve groups
+      const existingIds = new Set(prev.flat().filter(Boolean).map(c => c.id))
+      const sameCards = newCards.length === existingIds.size && newCards.every(c => existingIds.has(c.id))
+      if (sameCards && prev.flat().length === newCards.length) {
+        // Same cards, just update references in existing groups
+        return prev.map(g => g.map(c => newCardMap.get(c.id)).filter(Boolean)).filter(g => g.length > 0)
+      }
+
       // Remove discarded cards, update existing cards in place
       const updated = prev
         .map(g => g.filter(c => newCardMap.has(c.id)).map(c => newCardMap.get(c.id)))
         .filter(g => g.length > 0)
 
       // Find newly added cards not yet in any group
-      const existingIds = new Set(updated.flat().map(c => c.id))
-      const added = newCards.filter(c => !existingIds.has(c.id))
+      const updatedIds = new Set(updated.flat().map(c => c.id))
+      const added = newCards.filter(c => !updatedIds.has(c.id))
 
       if (added.length > 0) {
         if (updated.length === 0) return [added]
@@ -373,11 +336,11 @@ export default function PlayerHand({
   const sensors = useSensors(
     // Mouse: activate after 8px movement
     useSensor(PointerSensor, {
-      activationConstraint: { distance: 8 },
+      activationConstraint: { distance: 10 },
     }),
-    // Touch: activate after 200ms hold OR 8px movement — prevents conflict with taps
+    // Touch: activate after 10px movement — no time delay (Oppo/Vivo cancel delayed touches)
     useSensor(TouchSensor, {
-      activationConstraint: { delay: 150, tolerance: 8 },
+      activationConstraint: { distance: 10 },
     })
   )
   const activeCard = flatHand.find(c => c.id === activeId)
@@ -418,24 +381,54 @@ export default function PlayerHand({
     return clamp(-fW + 10, neededGap, -16)
   }, [handWidth, viewportWidth, flatHand.length, safeGroups.length, fW])
 
-  function handleDragStart({ active }) { if (canInteract) setActiveId(active.id) }
+  function handleDragStart({ active }) {
+    if (canInteract) {
+      onCardSelect(null)  // clear all selections when drag begins
+      setActiveId(active.id)
+    }
+  }
   function handleDragCancel() { setActiveId(null) }
-  function handleDragEnd({ active, over }) {
+  function handleDragEnd({ active, over, delta }) {
     if (!canInteract) { setActiveId(null); return }
     setActiveId(null)
-    if (!over) return
 
-    // ── Drop on discard pile → select that card and discard it ──
-    if (over.id === 'discard-pile') {
+    // ── If card dragged away from hand area → auto-discard ──
+    // delta.y < -40 (dragged up) OR significant movement away from hand
+    const draggedFarUp = delta && delta.y < -40
+    const draggedFarAway = delta && (Math.abs(delta.x) > 120 || Math.abs(delta.y) > 50)
+    
+    if ((draggedFarUp || draggedFarAway) && onDiscard) {
       const draggedCard = flatHand.find(c => c.id === active.id)
-      if (draggedCard && canDiscard && onDiscard) {
-        onCardSelect(draggedCard)   // mark it selected visually
-        onDiscard(draggedCard)      // pass card directly so discard doesn't need state to settle
+      if (draggedCard) {
+        onCardSelect(draggedCard)
+        onDiscard(draggedCard)
       }
       return
     }
 
-    // ── Drop on another card or group → reorder ──
+    // ── Drop outside any valid target → auto-discard if allowed ──
+    if (!over) {
+      if (onDiscard) {
+        const draggedCard = flatHand.find(c => c.id === active.id)
+        if (draggedCard) {
+          onCardSelect(draggedCard)
+          onDiscard(draggedCard)
+        }
+      }
+      return
+    }
+
+    // ── Drop on discard pile → discard ──
+    if (over.id === 'discard-pile') {
+      const draggedCard = flatHand.find(c => c.id === active.id)
+      if (draggedCard && onDiscard) {
+        onCardSelect(draggedCard)
+        onDiscard(draggedCard)
+      }
+      return
+    }
+
+    // ── Drop on another card or group → reorder freely ──
     if (active.id === over.id) return
     const srcGi = safeGroups.findIndex(g => g.some(c => c.id === active.id))
     if (srcGi === -1) return
@@ -453,7 +446,9 @@ export default function PlayerHand({
       const adj = srcGi === tgi && srcIdx < ti ? Math.max(0, ti - 1) : ti
       next[tgi].splice(adj, 0, moved)
     }
-    setHandGroups(next)
+    // Remove empty groups after moving cards
+    const cleaned = next.filter(g => g.length > 0)
+    setHandGroups(cleaned.length > 0 ? cleaned : [[]])
   }
 
   const handContent = (
@@ -472,6 +467,7 @@ export default function PlayerHand({
         overflow: 'visible',
         WebkitOverflowScrolling: 'touch',
         position: 'relative',
+        touchAction: 'none',
       }}
     >
       {safeGroups.map((group, gi) => (
@@ -490,7 +486,7 @@ export default function PlayerHand({
   )
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', paddingBottom: 2, paddingTop: 6, overflow: 'visible', position: 'relative' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', paddingBottom: 2, paddingTop: 6, overflow: 'visible', position: 'relative', zIndex: activeId ? 9999 : 'auto' }}>
       <DndContext
         sensors={sensors}
         collisionDetection={closestCenter}
@@ -498,28 +494,12 @@ export default function PlayerHand({
         onDragCancel={handleDragCancel}
         onDragEnd={handleDragEnd}
       >
-        {/* Invisible drop zone over the discard pile — shown while dragging */}
-        <DiscardDropZone
-          discardRef={discardPileRef}
-          canDiscard={canDiscard}
-          isDragging={!!activeId}
-        />
-
         {canInteract && sortableIds.length > 0 ? (
           <SortableContext items={sortableIds} strategy={horizontalListSortingStrategy}>
             {handContent}
           </SortableContext>
         ) : handContent}
 
-        <DragOverlay dropAnimation={{ duration: 150, easing: 'ease' }}>
-          {activeCard ? (
-            <CardFace
-              card={activeCard}
-              selected={selectedCard?.id === activeCard.id}
-              style={{ width: fW, height: fH, boxShadow: '0 18px 36px rgba(0,0,0,0.5)', transform: 'rotate(2deg)' }}
-            />
-          ) : null}
-        </DragOverlay>
       </DndContext>
     </div>
   )

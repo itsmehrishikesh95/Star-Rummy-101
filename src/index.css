@@ -9,6 +9,21 @@ html, body, #root {
   -webkit-font-smoothing: antialiased;
   color: white;
   touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Force touch-action on all interactive elements for Vivo/Oppo WebView compatibility */
+button, a, [role="button"], img[onClick], div[onClick] {
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-touch-callout: none;
+}
+
+/* Prevent image drag on all card images */
+img {
+  -webkit-user-drag: none;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 /* Use dynamic viewport units so the game fills the real visible area on mobile */

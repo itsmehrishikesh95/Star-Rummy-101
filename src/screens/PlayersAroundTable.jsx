@@ -283,7 +283,7 @@ export default function PlayersAroundTable({
 
   return (
     // overflow:visible so seats outside the table bounds are still shown
-    <div style={{ position: 'absolute', inset: 0, zIndex: 10, pointerEvents: 'none', overflow: 'visible' }}>
+    <div style={{ position: 'absolute', inset: 0, zIndex: 3, pointerEvents: 'none', overflow: 'visible' }}>
       {aiPlayers.map((player, idx) => {
         const pos = positions[idx % positions.length]
         const isActive = !isPlayerTurn && aiActionAnim?.playerIndex === idx

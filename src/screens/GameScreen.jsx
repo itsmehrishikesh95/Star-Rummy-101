@@ -3,6 +3,7 @@ import { useEffect as _ue } from 'react'
 import { motion } from 'framer-motion'
 import { Capacitor } from '@capacitor/core'
 import useGameStore from '../store'
+import useAdminStore from '../store/adminStore'
 import { calculateAlignment } from '../utils/alignmentConfig'
 import RummyCardAnimations from './RummyCardAnimations'
 import PlayersAroundTable from './PlayersAroundTable'
@@ -18,7 +19,7 @@ import jokerHatImg from '../assets/Joker_hat.png'
 import { getCardImage } from '../utils/cardImage'
 import { validateDeclaration as engineValidateDeclaration, isValidGroup as engineIsValidGroup } from '../game/engine'
 import socketService from '../services/socket'
-import { subscribeToGame, emitDrawCard, emitDiscardCard, emitStartGame } from '../services/gameSocket'
+import { subscribeToGame, emitDrawCard, emitDiscardCard, emitStartGame, emitDeclareHand, emitDropGame } from '../services/gameSocket'
 
 const C = {
   bg: '#0a0f0d',
@@ -270,8 +271,7 @@ const ANIM_STYLES = `
   }
   .card-selectable.selected {
     transform: translateY(-22px) scale(1.06);
-    box-shadow: 0 0 0 3px #F5C518,
-                0 12px 40px rgba(245,197,24,0.6),
+    box-shadow: 0 4px 16px rgba(0,0,0,0.5),
                 0 20px 60px rgba(0,0,0,0.8);
     filter: brightness(1.12);
   }
@@ -377,14 +377,14 @@ const ANIM_STYLES = `
   .joker-sparkle { animation: jokerSparkle 2s ease infinite; }
 
   @keyframes turnPulse {
-    0%,100% { box-shadow: 0 0 0 0 rgba(245,197,24,0.6); }
+    0%,100% { box-shadow: 0 0 0 0 rgba(255,255,255,0.4); }
     50%     { box-shadow: 0 0 0 12px transparent; }
   }
   .turn-pulse { animation: turnPulse 1.2s ease infinite; }
 
   @keyframes deckRipple {
-    0%   { transform: scale(1); box-shadow: 0 0 0 0 rgba(245,197,24,0.7); }
-    50%  { transform: scale(0.96); box-shadow: 0 0 0 18px rgba(245,197,24,0); }
+    0%   { transform: scale(1); box-shadow: 0 0 0 0 rgba(255,255,255,0.5); }
+    50%  { transform: scale(0.96); box-shadow: 0 0 0 18px rgba(255,255,255,0); }
     100% { transform: scale(1); }
   }
   .deck-ripple { animation: deckRipple 0.4s ease forwards; }
@@ -403,6 +403,12 @@ export default function GameScreen() {
   const user = useGameStore(s => s.user)
   const activeRoomCode = useGameStore(s => s.activeRoomCode)  // multiplayer room code
   const isMultiplayer = !!activeRoomCode
+
+  // Admin config — controls bot behavior, timers, etc.
+  const adminConfig = useAdminStore(s => s.getConfig())
+
+  // Effective table size: in solo mode, override with admin bot count + 1 (human)
+  const effectiveTableSize = isMultiplayer ? tableSize : Math.min((adminConfig.botCount || (tableSize - 1)), 5) + 1
 
   const [viewportWidth, setViewportWidth] = useState(
     typeof window !== 'undefined' ? window.innerWidth : 1200
@@ -480,10 +486,10 @@ export default function GameScreen() {
   const [currentTurn, setCurrentTurn] = useState(0)
   const isPlayerTurn = currentTurn === 0
   const currentTurnRef = useRef(0)
-  const [turnTimer, setTurnTimer] = useState(30)
+  const [turnTimer, setTurnTimer] = useState(() => useAdminStore.getState().turnTimer || 30)
   // Two-phase timer: 'main' (30s green) → 'penalty' (10s red) → auto-discard
   const [timerPhase, setTimerPhase] = useState('main') // 'main' | 'penalty' | 'idle'
-  const [penaltyTimer, setPenaltyTimer] = useState(10)
+  const [penaltyTimer, setPenaltyTimer] = useState(() => useAdminStore.getState().penaltyTimer || 10)
   const penaltyTimerRef = useRef(null)
   const [dealtCount, setDealtCount] = useState(0)
   const [showDeclare, setShowDeclare] = useState(false)
@@ -574,9 +580,12 @@ export default function GameScreen() {
   }, [])
 
   // ── MULTIPLAYER BRIDGE ─────────────────────────────────────────────────────
-  // When activeRoomCode is present, subscribe to server game_state and sync to local state.
-  // Uses the SAME visual pipeline as practice mode (deal animation, turn start).
-  const multiplayerInitDoneRef = useRef(false)
+  // When activeRoomCode is present, the SERVER is authoritative for the full game
+  // (toss, wild joker, dealing, draw, discard, declare, drop, scoring, rounds).
+  // This bridge drives the SAME visual pipeline as practice mode from server events.
+  const mpRoundRef = useRef(0)        // last round we ran the deal animation for
+  const mpDealingRef = useRef(false)  // true while a deal animation is in flight
+  const mpPendingRef = useRef(null)   // latest game_state received during dealing
 
   useEffect(() => {
     if (!isMultiplayer) return
@@ -604,137 +613,251 @@ export default function GameScreen() {
         ...card,
         suit: suitToUnicode[card.suit] || card.suit,
         pts: ['A', 'J', 'Q', 'K', '10'].includes(card.rank) ? 10 : (parseInt(card.rank) || 0),
+        isJoker: false,
       }
+    }
+    // Mark a card as a wild joker if its rank matches the cut joker's rank.
+    function markWild(card, wjRaw) {
+      if (!card) return card
+      if (wjRaw && !card.isJoker && card.rank === wjRaw.rank) return { ...card, isWildJoker: true }
+      return { ...card, isWildJoker: false }
+    }
+
+    // Build the local seating from a server snapshot's player list.
+    // My seat = 0; opponents map to seats 1..n in server order.
+    function buildSeating(serverPlayers) {
+      const opponents = []
+      const seatByServerIdx = {}
+      serverPlayers.forEach((p, sIdx) => {
+        if (p.id === mySocketId) { seatByServerIdx[sIdx] = 0; return }
+        const seat = opponents.length + 1
+        seatByServerIdx[sIdx] = seat
+        opponents.push({
+          id: opponents.length,
+          name: p.name || `Player ${seat}`,
+          hand: new Array(p.handSize || 0).fill(0).map((_, k) => ({ id: `hidden-${opponents.length}-${k}`, rank: '?', suit: '?' })),
+          score: p.score || 0,
+          isEliminated: !!p.isEliminated,
+        })
+      })
+      return { opponents, seatByServerIdx }
+    }
+
+    // Run the full deal pipeline for a (new) round — toss + dealing animation.
+    function runDealPipeline(data) {
+      const players = data.players || []
+      const wjRaw = data.wildJoker ? convertCard(data.wildJoker) : null
+      const wj = wjRaw ? { ...wjRaw, isWildJoker: true } : null
+      const myHand = (data.hand || []).map((c) => markWild(convertCard(c), wjRaw))
+      const serverDiscard = (data.discardPile || []).map((c) => markWild(convertCard(c), wjRaw))
+      const { opponents, seatByServerIdx } = buildSeating(players)
+
+      mpDealingRef.current = true
+
+      // 1. Seat players, clear hand, dealing state
+      setShowResult(false)
+      setShowDeclare(false)
+      setResultMsg('')
+      setConfetti([])
+      setGroupFlash({})
+      setRoundSnapshot(null)
+      setLayerAnimations([])
+      clearPendingTurnTimers()
+
+      setAiPlayers(opponents)
+      setDiscardPile(serverDiscard)
+      setDrawPile([{ id: 'server-deck', rank: '?', suit: '?' }])
+      setWildJoker(wj)
+      setPlayerHand([])
+      setDealtCount(0)
+      setGameState('dealing')
+      setCurrentTurn(0)
+      currentTurnRef.current = 0
+      setTurnPhase('idle')
+      setSelectedCard(null)
+      setSelectedCards([])
+      setPlayerDropped(false)
+      setHasDrawn(false)
+      isAdvancingTurnRef.current = false
+
+      const me = players.find((p) => p.id === mySocketId)
+
+      // Scoreboard from server scores
+      const pName = user?.name || 'You'
+      setScoreboard([
+        { id: 'you', name: pName, score: me?.score || 0, isEliminated: !!me?.isEliminated, isYou: true },
+        ...opponents.map((op) => ({ id: `mp-${op.id}`, name: op.name, score: op.score, isEliminated: op.isEliminated, isYou: false })),
+      ])
+      setRoundNumber(data.round || 1)
+      setWinner(null)
+      setPlayerScore(me?.score || 0)
+
+      // 2. Deal animation (my cards fly from deck to hand)
+      setTimeout(() => {
+        const drawBox = drawPileRef.current?.getBoundingClientRect() || { left: window.innerWidth / 2, top: window.innerHeight / 2 }
+        const handBox = handRef.current?.getBoundingClientRect() || { left: window.innerWidth / 2 - 200, top: window.innerHeight - 100, width: 400 }
+        const anims = []
+        for (let round = 0; round < myHand.length; round++) {
+          anims.push({
+            id: `deal_mp_${round}`,
+            card: myHand[round],
+            start: { x: drawBox.left, y: drawBox.top },
+            end: { x: handBox.left + (handBox.width / Math.max(myHand.length, 1)) * round, y: handBox.top },
+            faceUp: true,
+            flipMidFlight: true,
+            delay: round * 0.1,
+            duration: 0.4,
+            scaleEnd: 1,
+            width: cardW,
+            height: cardH,
+          })
+        }
+        setLayerAnimations(anims)
+
+        const totalDealTime = (Math.max(myHand.length - 1, 0) * 0.1 + 0.4 + 0.3) * 1000
+        setTimeout(() => {
+          setPlayerHand(myHand)
+          setDealtCount(myHand.length)
+
+          // 3. Toss → whose turn (dealer crown)
+          const serverTurnIndex = players.findIndex((p) => p.id === data.currentTurn)
+          const localTurn = serverTurnIndex >= 0 ? (seatByServerIdx[serverTurnIndex] ?? 0) : 0
+          setDealerIndex(localTurn)
+
+          turnStartTimeoutRef.current = setTimeout(() => {
+            setCurrentTurn(localTurn)
+            currentTurnRef.current = localTurn
+            setSelectedCard(null)
+            setSelectedCards([])
+            const iAmEliminated = !!me?.isEliminated
+            if (localTurn === 0 && !iAmEliminated) {
+              setHasDrawn(!!data.hasDrawn)
+              setGameState(data.hasDrawn ? 'discard' : 'draw')
+            } else {
+              setHasDrawn(false)
+              setGameState('draw')
+            }
+            setTurnTimer(useAdminStore.getState().turnTimer || 30)
+            setPenaltyTimer(useAdminStore.getState().penaltyTimer || 10)
+            setTimerPhase('main')
+
+            // Done dealing — flush any state received mid-animation
+            mpDealingRef.current = false
+            if (mpPendingRef.current) {
+              const pending = mpPendingRef.current
+              mpPendingRef.current = null
+              syncGameState(pending)
+            }
+            console.log('[Multiplayer] Round dealt — turn seat:', localTurn)
+          }, 300)
+        }, totalDealTime)
+      }, 300)
+    }
+
+    // Sync an in-round game_state (after a draw/discard/drop by anyone).
+    function syncGameState(data) {
+      const players = data.players || []
+      const wjRaw = data.wildJoker ? convertCard(data.wildJoker) : null
+      const myHand = (data.hand || []).map((c) => markWild(convertCard(c), wjRaw))
+      const serverDiscard = (data.discardPile || []).map((c) => markWild(convertCard(c), wjRaw))
+      const { opponents, seatByServerIdx } = buildSeating(players)
+      const me = players.find((p) => p.id === mySocketId)
+
+      setPlayerHand(myHand)
+      setDiscardPile(serverDiscard)
+      if (wjRaw) setWildJoker({ ...wjRaw, isWildJoker: true })
+      setAiPlayers(opponents)
+
+      // Update scoreboard
+      const pName = user?.name || 'You'
+      setScoreboard([
+        { id: 'you', name: pName, score: me?.score || 0, isEliminated: !!me?.isEliminated, isYou: true },
+        ...opponents.map((op) => ({ id: `mp-${op.id}`, name: op.name, score: op.score, isEliminated: op.isEliminated, isYou: false })),
+      ])
+      setPlayerScore(me?.score || 0)
+      setPlayerDropped(!!data.myDropped)
+
+      const serverTurnIndex = players.findIndex((p) => p.id === data.currentTurn)
+      const localTurn = serverTurnIndex >= 0 ? (seatByServerIdx[serverTurnIndex] ?? 0) : 0
+      setCurrentTurn(localTurn)
+      currentTurnRef.current = localTurn
+      setDealerIndex(localTurn)
+
+      const myTurn = data.currentTurn === mySocketId
+      if (myTurn && !data.myEliminated && !data.myDropped) {
+        setHasDrawn(!!data.hasDrawn)
+        setGameState(data.hasDrawn ? 'discard' : 'draw')
+      } else {
+        setHasDrawn(false)
+        setGameState('draw')
+      }
+      console.log('[Multiplayer] sync', { myTurn, handSize: myHand.length, localTurn, round: data.round })
     }
 
     const cleanup = subscribeToGame(activeRoomCode, mySocketId, {
       onGameState: (data) => {
-        const rawHand = data.hand || []
-        const myHand = rawHand.map(convertCard)
-        const serverDiscard = (data.discardPile || []).map(convertCard)
-        const myIndex = (data.players || []).findIndex(p => p.id === mySocketId)
-
-        // Build opponent list
-        const opponents = (data.players || [])
-          .filter(p => p.id !== mySocketId)
-          .map((p, i) => ({
-            id: i,
-            name: p.name || `Player ${i + 1}`,
-            hand: new Array(p.handSize || 0).fill({ id: `hidden-${i}`, rank: '?', suit: '?' }),
-            score: 0,
-            isEliminated: false,
-          }))
-
-        // ─── FIRST game_state: full deal animation pipeline (same as practice) ───
-        if (!multiplayerInitDoneRef.current) {
-          multiplayerInitDoneRef.current = true
-          console.log('[Multiplayer] Seating players')
-
-          // 1. Seat players — set opponents, clear hand, set dealing state
-          setAiPlayers(opponents)
-          setDiscardPile(serverDiscard)
-          setDrawPile([{ id: 'server-deck', rank: '?', suit: '?' }])
-          setWildJoker(null)
-          setPlayerHand([])
-          setDealtCount(0)
-          setGameState('dealing')
-          setCurrentTurn(0)
-          currentTurnRef.current = 0
-          setTurnPhase('idle')
-          isAdvancingTurnRef.current = false
-
-          // Build scoreboard
-          const pName = user?.name || 'You'
-          setScoreboard([
-            { id: 'you', name: pName, score: 0, isEliminated: false, isYou: true },
-            ...opponents.map(op => ({
-              id: `mp-${op.id}`, name: op.name, score: 0, isEliminated: false, isYou: false,
-            })),
-          ])
-          setRoundNumber(1)
-          setWinner(null)
-          setPlayerScore(0)
-
-          // 2. After short delay (DOM stable), trigger deal animation
-          setTimeout(() => {
-            console.log('[Multiplayer] Starting deck animation')
-            const drawBox = drawPileRef.current?.getBoundingClientRect() || { left: window.innerWidth / 2, top: window.innerHeight / 2 }
-            const handBox = handRef.current?.getBoundingClientRect() || { left: window.innerWidth / 2 - 200, top: window.innerHeight - 100, width: 400 }
-
-            const anims = []
-            for (let round = 0; round < myHand.length; round++) {
-              anims.push({
-                id: `deal_mp_${round}`,
-                card: myHand[round],
-                start: { x: drawBox.left, y: drawBox.top },
-                end: { x: handBox.left + (handBox.width / Math.max(myHand.length, 1)) * round, y: handBox.top },
-                faceUp: true,
-                flipMidFlight: true,
-                delay: round * 0.1,
-                duration: 0.4,
-                scaleEnd: 1,
-                width: cardW,
-                height: cardH,
-              })
-            }
-            setLayerAnimations(anims)
-
-            // 3. After deal animation completes, set hand and start turn
-            const totalDealTime = (Math.max(myHand.length - 1, 0) * 0.1 + 0.4 + 0.3) * 1000
-            setTimeout(() => {
-              console.log('[Multiplayer] Dealing cards complete')
-              setPlayerHand(myHand)
-              setDealtCount(13)
-
-              // 4. Determine whose turn and start
-              const serverTurnIndex = (data.players || []).findIndex(p => p.id === data.currentTurn)
-              const localTurn = serverTurnIndex === myIndex ? 0 : (serverTurnIndex >= 0 ? serverTurnIndex : 0)
-              setDealerIndex(localTurn)
-
-              console.log('[Multiplayer] Turn set')
-              turnStartTimeoutRef.current = setTimeout(() => {
-                setCurrentTurn(localTurn)
-                currentTurnRef.current = localTurn
-                setHasDrawn(false)
-                setSelectedCard(null)
-                setSelectedCards([])
-                setGameState('draw')
-                setTurnTimer(30)
-                setPenaltyTimer(10)
-                setTimerPhase('main')
-                console.log('[Multiplayer] Game started — turn:', localTurn)
-              }, 300)
-            }, totalDealTime)
-          }, 300)
-
-          return // Don't process further on first frame
+        const round = data.round || 1
+        // New round (including the first) → run the toss + deal pipeline.
+        if (round > mpRoundRef.current) {
+          mpRoundRef.current = round
+          mpPendingRef.current = null
+          runDealPipeline(data)
+          return
         }
-
-        // ─── SUBSEQUENT game_state updates: sync state directly ───
-        setPlayerHand(myHand)
-        setDiscardPile(serverDiscard)
-        setAiPlayers(opponents)
-
-        const serverTurnIndex = (data.players || []).findIndex(p => p.id === data.currentTurn)
-        const localTurn = serverTurnIndex === myIndex ? 0 : (serverTurnIndex >= 0 ? serverTurnIndex : 0)
-        setCurrentTurn(localTurn)
-        currentTurnRef.current = localTurn
-
-        const myTurn = data.currentTurn === mySocketId
-        if (myTurn && myHand.length <= 13) {
-          setGameState('draw')
-          setHasDrawn(false)
-        } else if (myTurn && myHand.length === 14) {
-          setGameState('discard')
-          setHasDrawn(true)
-        } else if (!myTurn) {
-          setGameState('draw')
-          setHasDrawn(false)
+        // Mid-deal updates are buffered and flushed when dealing completes.
+        if (mpDealingRef.current) {
+          mpPendingRef.current = data
+          return
         }
+        syncGameState(data)
+      },
 
-        console.log('[Multiplayer] game_state synced', {
-          myTurn, handSize: myHand.length, localTurn,
+      onRoundResult: (data) => {
+        clearPendingTurnTimers()
+        isAdvancingTurnRef.current = true
+        setGameState('finished')
+
+        const wjRaw = data.wildJoker ? convertCard(data.wildJoker) : null
+        const resultPlayers = data.players || []
+        const meRes = resultPlayers.find((p) => p.id === mySocketId)
+        const oppRes = resultPlayers.filter((p) => p.id !== mySocketId)
+
+        const myResultHand = (meRes?.hand || []).map((c) => markWild(convertCard(c), wjRaw))
+
+        // Scoreboard + totals from server
+        const pName = user?.name || 'You'
+        setScoreboard([
+          { id: 'you', name: pName, score: meRes?.totalScore || 0, isEliminated: !!meRes?.isEliminated, isYou: true },
+          ...oppRes.map((p, i) => ({ id: `mp-${i}`, name: p.name, score: p.totalScore, isEliminated: p.isEliminated, isYou: false })),
+        ])
+        setPlayerScore(meRes?.totalScore || 0)
+
+        // Snapshot for the result card rows (all hands revealed)
+        setRoundSnapshot({
+          playerHand: myResultHand,
+          aiHands: oppRes.map((p) => ({
+            name: p.name,
+            hand: (p.hand || []).map((c) => markWild(convertCard(c), wjRaw)),
+          })),
         })
+        setPlayerHand(myResultHand)
+        setAiPlayers((prev) => prev.map((ai, i) => (oppRes[i]
+          ? { ...ai, score: oppRes[i].totalScore, isEliminated: oppRes[i].isEliminated }
+          : ai)))
+
+        if (data.winner) {
+          setWinner({ name: data.winner.name, isYou: data.winner.id === mySocketId })
+        }
+
+        setResultMsg(data.message || '')
+
+        // Celebratory modal if I made a valid declaration; otherwise summary.
+        const iWonByDeclare = data.type === 'declare' && data.valid && meRes?.isDeclarer
+        if (iWonByDeclare && !data.winner) {
+          setShowDeclare(true)
+        } else {
+          setShowResult(true)
+        }
       },
 
       onGameError: (data) => {
@@ -813,8 +936,11 @@ export default function GameScreen() {
     if (isMultiplayer) return
 
     console.log('INIT EFFECT TRIGGERED')
-    const numPlayers = tableSize
-    // Use 2 decks for 6 players, 1 deck for 2 players
+    // In solo mode, use admin config for bot count (overrides tableSize)
+    const adminCfg = useAdminStore.getState()
+    const numBots = Math.min(adminCfg.botCount || (tableSize - 1), 5)
+    const numPlayers = numBots + 1  // bots + human player
+    // Use 2 decks for 5+ players, 1 deck for fewer
     const deck = numPlayers >= 5
       ? makeTwoDecks()
       : makeDeck()
@@ -830,9 +956,11 @@ export default function GameScreen() {
     setDrawPile(markWildJokers(dealt.drawPile))
     setDiscardPile(markWildJokers(dealt.discardPile))
     setWildJoker({ ...wildCard, isWildJoker: true })
+    // Use admin-configured bot names
+    const botNames = adminCfg.botNames || AI_NAMES
     const ais = dealt.aiHands.map((hand, i) => ({
       id: i,
-      name: AI_NAMES[i],
+      name: botNames[i] || AI_NAMES[i] || `Bot ${i + 1}`,
       hand: markWildJokers(hand),
       score: 0,
       isEliminated: false,
@@ -936,11 +1064,11 @@ export default function GameScreen() {
     // Reset to main phase whenever a new turn starts
     clearInterval(timerRef.current)
     clearInterval(penaltyTimerRef.current)
-    setTurnTimer(30)
-    setPenaltyTimer(10)
+    setTurnTimer(useAdminStore.getState().turnTimer || 30)
+    setPenaltyTimer(useAdminStore.getState().penaltyTimer || 10)
     setTimerPhase('main')
 
-    // Phase 1: 30s green countdown
+    // Phase 1: main countdown
     timerRef.current = setInterval(() => {
       setTurnTimer(v => {
         if (v <= 1) {
@@ -996,8 +1124,8 @@ export default function GameScreen() {
       setSelectedCards([])   // Clear multi-select on turn start
       console.log('SETTING GAME STATE TO DRAW')
       setGameState('draw')
-      setTurnTimer(30)
-      setPenaltyTimer(10)
+      setTurnTimer(useAdminStore.getState().turnTimer || 30)
+      setPenaltyTimer(useAdminStore.getState().penaltyTimer || 10)
       setTimerPhase('main')
       console.log('GAME STATE SET TO DRAW', { playerIndex, isPlayerTurn: playerIndex === 0 })
 
@@ -1008,8 +1136,8 @@ export default function GameScreen() {
           turnEngine.advanceTurnOnce('skip-eliminated-ai')
           return
         }
-        console.log('AI TURN SCHEDULED', { playerIndex, delayMs: 1000 })
-        aiTurnTimeoutRef.current = setTimeout(() => turnEngine.playAITurn(playerIndex - 1), 1000)
+        console.log('AI TURN SCHEDULED', { playerIndex, delayMs: useAdminStore.getState().botSpeed || 1000 })
+        aiTurnTimeoutRef.current = setTimeout(() => turnEngine.playAITurn(playerIndex - 1), useAdminStore.getState().botSpeed || 1000)
       }
     },
 
@@ -1019,21 +1147,21 @@ export default function GameScreen() {
       clearPendingTurnTimers()
       turnEngine.log('END TURN', { reason })
 
-      let next = (currentTurnRef.current + 1) % 6
+      let next = (currentTurnRef.current + 1) % effectiveTableSize
       let attempts = 0
       const aiSnapshot = aiPlayersRef.current
-      while (attempts < 6) {
+      while (attempts < effectiveTableSize) {
         // Skip: eliminated AI, OR player 0 if they've dropped this round
         const skipPlayer0 = next === 0 && playerDropped
         const skipAI = next !== 0 && aiSnapshot[next - 1]?.isEliminated
         if (!skipPlayer0 && !skipAI) {
           break
         }
-        next = (next + 1) % 6
+        next = (next + 1) % effectiveTableSize
         attempts++
       }
 
-      if (attempts >= 6) {
+      if (attempts >= effectiveTableSize) {
         turnEngine.log('ROUND COMPLETE - All players eliminated')
         setTurnPhase('round_end')
         return
@@ -1123,7 +1251,7 @@ export default function GameScreen() {
             clearTimeout(aiActionClearTimeoutRef.current)
             aiActionClearTimeoutRef.current = setTimeout(() => setAiActionAnim(null), 600)
             clearTimeout(aiDiscardTimeoutRef.current)
-            aiDiscardTimeoutRef.current = setTimeout(() => turnEngine.doAiDiscard(aiIndex, newHand), 1000)
+            aiDiscardTimeoutRef.current = setTimeout(() => turnEngine.doAiDiscard(aiIndex, newHand), useAdminStore.getState().botSpeed || 1000)
             return newDp
           })
         }, 500)
@@ -1133,15 +1261,34 @@ export default function GameScreen() {
     doAiDiscard: (aiIndex, currentHand) => {
       const groups = getHandGroups(currentHand)
       const evals = groups.map(g => evalGroup(g))
+      
+      // Bot intelligence based on admin win rate + difficulty
+      const cfg = useAdminStore.getState()
+      const winRate = cfg.botWinRate ?? 30
+      const difficulty = cfg.botDifficulty || 'medium'
+      
+      // Smart play chance: higher win rate + harder difficulty = smarter moves
+      const difficultyBonus = difficulty === 'hard' ? 20 : difficulty === 'easy' ? -20 : 0
+      const smartChance = Math.min(100, Math.max(0, winRate + difficultyBonus))
+      const playsSmart = Math.random() * 100 < smartChance
+
       let discard = currentHand[currentHand.length - 1]
-      let maxPts = -1
-      groups.forEach((g, gi) => {
-        if (!evals[gi].valid) {
-          g.forEach(c => {
-            if (c.pts > maxPts) { maxPts = c.pts; discard = c }
-          })
-        }
-      })
+      
+      if (playsSmart) {
+        // Smart: discard highest-point card from invalid groups
+        let maxPts = -1
+        groups.forEach((g, gi) => {
+          if (!evals[gi].valid) {
+            g.forEach(c => {
+              if (c.pts > maxPts) { maxPts = c.pts; discard = c }
+            })
+          }
+        })
+      } else {
+        // Dumb: discard a random card (may discard from valid groups)
+        const randomIdx = Math.floor(Math.random() * currentHand.length)
+        discard = currentHand[randomIdx]
+      }
 
       const finalHand = currentHand.filter(c => c.id !== discard.id)
 
@@ -1510,6 +1657,14 @@ export default function GameScreen() {
       return
     }
 
+    // ── MULTIPLAYER: the server drives the next round. Just dismiss the modal;
+    // the next round's game_state will re-deal automatically. ──
+    if (isMultiplayer) {
+      setShowResult(false)
+      setShowDeclare(false)
+      return
+    }
+
     // Close modals, clear all animation states
     setShowResult(false)
     setShowDeclare(false)
@@ -1531,8 +1686,8 @@ export default function GameScreen() {
     discardPendingRef.current = false
     setTurnPhase('idle')
 
-    const numPlayers = 6
-    const deck = [...makeDeck(), ...makeDeck()]
+    const numPlayers = effectiveTableSize
+    const deck = numPlayers >= 5 ? makeTwoDecks() : makeDeck()
     const dealt = dealCards(deck, numPlayers)
 
     const wildCard = dealt.wildJoker
@@ -1744,10 +1899,14 @@ export default function GameScreen() {
     const cardToDiscard = cardOverride || selectedCard
     if (!cardToDiscard) return
 
-    // Temporarily sync selectedCard so runGuarded validation passes
-    if (cardOverride) setSelectedCard(cardOverride)
-
-    if (!runGuarded('discard', () => { })) return
+    // When called via drag (cardOverride provided), skip runGuarded since selectedCard state
+    // may not be synced yet. Just check essential conditions directly.
+    if (cardOverride) {
+      if (!isPlayerTurn || gameState !== 'discard' || !hasDrawn) return
+      setSelectedCard(cardOverride)
+    } else {
+      if (!runGuarded('discard', () => { })) return
+    }
 
     // ── MULTIPLAYER ──
     if (isMultiplayer) {
@@ -1822,6 +1981,14 @@ export default function GameScreen() {
     if (!runGuarded('drop', () => { })) return
     clearInterval(timerRef.current)
 
+    // ── MULTIPLAYER: server applies the drop penalty + advances the turn ──
+    if (isMultiplayer) {
+      emitDropGame(activeRoomCode)
+      setSelectedCard(null)
+      setSelectedCards([])
+      return
+    }
+
     const pts = !hasDrawn ? 20 : 40
     const dropType = !hasDrawn ? 'First drop' : 'Middle drop'
 
@@ -1850,6 +2017,17 @@ export default function GameScreen() {
 
     const handAfterDiscard = playerHand.filter(c => c.id !== selectedCard.id)
     if (handAfterDiscard.length !== 13) {
+      return
+    }
+
+    // ── MULTIPLAYER: server validates the declaration + scores everyone ──
+    if (isMultiplayer) {
+      clearPendingTurnTimers()
+      isAdvancingTurnRef.current = true
+      setGameState('finished')
+      emitDeclareHand(activeRoomCode, selectedCard.id)
+      setSelectedCard(null)
+      setSelectedCards([])
       return
     }
 
@@ -2087,6 +2265,11 @@ export default function GameScreen() {
 
     const finalGroups = resultGroups.map(g => g.cards)
 
+    // Update playerHand to match the new sorted order (flat)
+    // This keeps the store in sync with the visual grouping
+    const sortedFlat = finalGroups.flat()
+    setPlayerHand(sortedFlat)
+
     // Push sorted groups directly into PlayerHand via sortRef
     if (sortRef.current) {
       sortRef.current(finalGroups)
@@ -2106,6 +2289,13 @@ export default function GameScreen() {
   // - selectedCards (multi-select for Sort/Group): always allowed, tap again to deselect
   // - selectedCard (single-select for Discard/Declare): only on player's turn, tap again to deselect
   function selectCard(card) {
+    // null = clear all selections (used when drag starts)
+    if (!card) {
+      setSelectedCard(null)
+      setSelectedCards([])
+      return
+    }
+
     // Multi-select toggle — always allowed
     setSelectedCards(prev => {
       const exists = prev.some(c => c.id === card.id)
@@ -2150,8 +2340,8 @@ export default function GameScreen() {
   function autoDiscard() {
     if (!playerHand.length) return
 
-    const executeDiscard = (hand) => {
-      // Pick highest-point card from an invalid group; fallback to last card
+    // Pick highest-point card from an invalid group; fallback to last card
+    const pickDiscard = (hand) => {
       const groups = getHandGroups(hand)
       const evals = groups.map(g => evalGroup(g))
       let card = hand[hand.length - 1]
@@ -2163,6 +2353,28 @@ export default function GameScreen() {
           })
         }
       })
+      return card
+    }
+
+    // ── MULTIPLAYER: emit draw/discard to the server (it is authoritative) ──
+    if (isMultiplayer) {
+      if (!hasDrawn) {
+        emitDrawCard(activeRoomCode, false)
+        // After the server returns the drawn card, the next game_state sets
+        // hasDrawn=true; discard the worst card shortly after.
+        setTimeout(() => {
+          const card = pickDiscard(playerHand)
+          if (card) emitDiscardCard(activeRoomCode, card.id)
+        }, 900)
+      } else {
+        const card = pickDiscard(playerHand)
+        if (card) emitDiscardCard(activeRoomCode, card.id)
+      }
+      return
+    }
+
+    const executeDiscard = (hand) => {
+      const card = pickDiscard(hand)
 
       setSelectedCard(card)
       setTimeout(() => {
@@ -2280,30 +2492,15 @@ export default function GameScreen() {
     return (
       <div style={{
         width: 28, height: 40, borderRadius: 4, flexShrink: 0,
-        overflow: 'visible', position: 'relative',
-        boxShadow: isJokerCard
-          ? '0 0 0 1.5px #FFD700, 0 0 5px rgba(255,215,0,0.5)'
-          : '0 1px 4px rgba(0,0,0,0.35)',
+        overflow: 'hidden', position: 'relative',
+        border: isJokerCard ? '1.5px solid #FFD700' : 'none',
+        boxShadow: '0 1px 4px rgba(0,0,0,0.35)',
       }}>
-        <div style={{ width: '100%', height: '100%', borderRadius: 4, overflow: 'hidden' }}>
-          <img
-            src={getCardImage(card.rank, card.suit)}
-            style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block', borderRadius: 4 }}
-            draggable={false}
-          />
-        </div>
-        {isJokerCard && (
-          <img
-            src={jokerHatImg}
-            draggable={false}
-            style={{
-              position: 'absolute', top: -14, left: -9,
-              width: 18, height: 'auto',
-              pointerEvents: 'none', zIndex: 10,
-              filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.7))',
-            }}
-          />
-        )}
+        <img
+          src={getCardImage(card.rank, card.suit)}
+          style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block', borderRadius: 3 }}
+          draggable={false}
+        />
       </div>
     )
   }
@@ -2565,7 +2762,7 @@ export default function GameScreen() {
               pointerEvents: 'none',
             }}
           >
-            <div style={{ pointerEvents: 'auto', touchAction: 'manipulation' }}>
+            <div style={{ pointerEvents: 'auto', touchAction: 'manipulation', position: 'relative', zIndex: 20 }}>
               <CenterArea
                 wildJoker={wildJoker}
                 drawPile={drawPile}
@@ -2580,8 +2777,8 @@ export default function GameScreen() {
                 canDeclare={canDeclareMove}
                 drawPileRef={drawPileRef}
                 discardPileRef={discardPileRef}
-                cardW={Math.round(cardW * 0.75)}
-                cardH={Math.round(cardH * 0.75)}
+                cardW={Math.round(cardW * 0.85)}
+                cardH={Math.round(cardH * 0.85)}
               />
             </div>
           </div>
@@ -2599,6 +2796,7 @@ export default function GameScreen() {
           padding: '16px 8px 6px',
           zIndex: 11,
           overflow: 'visible',
+          pointerEvents: 'none',
         }}
       >
         {/* Player Hand */}
@@ -2606,7 +2804,8 @@ export default function GameScreen() {
           style={{
             display: 'flex',
             justifyContent: 'center',
-            overflow: 'visible',   // allow selected card to lift without clipping
+            overflow: 'visible',
+            pointerEvents: 'auto',
           }}
         >
           <PlayerHand
@@ -2649,6 +2848,7 @@ export default function GameScreen() {
             alignItems: 'center',
             gap: 4,
             width: '100%',
+            pointerEvents: 'auto',
           }}
         >
           {/* LEFT: Sort + Drop */}
@@ -2713,7 +2913,7 @@ export default function GameScreen() {
                     : timerPhase === 'penalty' ? penaltyTimer
                     : turnTimer
                   }
-                  totalSeconds={timerPhase === 'penalty' ? 10 : 30}
+                  totalSeconds={timerPhase === 'penalty' ? (adminConfig.penaltyTimer || 10) : (adminConfig.turnTimer || 30)}
                   phase={timerPhase === 'penalty' ? 'penalty' : 'main'}
                 />
                 <motion.div
@@ -2758,7 +2958,7 @@ export default function GameScreen() {
                     ? timerPhase === 'penalty'
                       ? `EXTRA · ${penaltyTimer}s`
                       : `YOUR TURN · ${turnTimer}s`
-                    : 'PRACTICE'}
+                    : isMultiplayer ? 'WAITING' : 'PRACTICE'}
                 </span>
               </div>
             </div>
@@ -2774,7 +2974,7 @@ export default function GameScreen() {
               onDropGame={() => {}}
               onSort={() => {}}
               onGroup={groupHand}
-              onDiscard={discardCard}
+              onDiscard={() => discardCard()}
               isPlayerTurn={isPlayerTurn}
               canDropMove={false}
               canSortMove={false}

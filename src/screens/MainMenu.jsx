@@ -32,19 +32,34 @@ export default function MainMenu() {
         {/* Top bar */}
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
           {/* Profile button */}
-          <button
-            onClick={() => setScreen('profile')}
-            style={{
-              width: 40, height: 40, borderRadius: '50%',
-              border: '2px solid rgba(245,197,24,0.5)',
-              background: 'rgba(245,197,24,0.1)',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              cursor: 'pointer', fontSize: 22,
-            }}
-            title="My Profile"
-          >
-            {displayAvatar}
-          </button>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <button
+              onClick={() => setScreen('profile')}
+              style={{
+                width: 40, height: 40, borderRadius: '50%',
+                border: '2px solid rgba(245,197,24,0.5)',
+                background: 'rgba(245,197,24,0.1)',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                cursor: 'pointer', fontSize: 22,
+              }}
+              title="My Profile"
+            >
+              {displayAvatar}
+            </button>
+            <button
+              onClick={() => setScreen('admin')}
+              style={{
+                width: 36, height: 36, borderRadius: '50%',
+                border: '1.5px solid rgba(59,130,246,0.4)',
+                background: 'rgba(59,130,246,0.08)',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                cursor: 'pointer', fontSize: 16,
+              }}
+              title="Admin Panel"
+            >
+              ⚙️
+            </button>
+          </div>
           <div
             style={{
               display: 'flex',

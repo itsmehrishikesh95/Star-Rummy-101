@@ -4,7 +4,6 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { createPortal } from 'react-dom'
 
 import cardBackImg from '../assets/Star_Rummy_card.png'
-import jokerHatImg from '../assets/Joker_hat.png'
 
 // Reusing CardFace and CardBack from other components for consistency
 function CardBack() {
@@ -35,43 +34,21 @@ function CardFace({ card, selected = false, style = {}, onClick, width = 72 }) {
         height: '100%',
         borderRadius: 8,
         background: '#fff',
-        border: 'none',
-        boxShadow: isJokerCard
-          ? '0 0 0 2px #FFD700, 0 0 8px 2px rgba(255,215,0,0.55), 0 6px 16px rgba(0,0,0,0.55)'
-          : selected
-            ? '0 0 14px rgba(245,197,24,0.7), 0 8px 20px rgba(0,0,0,0.5)'
-            : '0 6px 16px rgba(0,0,0,0.55)',
+        border: isJokerCard ? '2px solid #FFD700' : 'none',
+        boxShadow: '0 6px 16px rgba(0,0,0,0.55)',
         cursor: onClick ? 'pointer' : 'default',
         position: 'relative',
         userSelect: 'none',
-        overflow: 'visible',
+        overflow: 'hidden',
         ...style,
       }}
     >
-      <div style={{ width: '100%', height: '100%', borderRadius: 8, overflow: 'hidden' }}>
-        <img src={getCardImage(card.rank, card.suit)} style={{
-          width: '100%', 
-          height: '100%', 
-          objectFit: 'contain',
-          borderRadius: '6px',
-        }} />
-      </div>
-      {isJokerCard && (
-        <img
-          src={jokerHatImg}
-          draggable={false}
-          style={{
-            position: 'absolute',
-            top: -28,
-            left: -16,
-            width: Math.round(width * 0.65),
-            height: 'auto',
-            pointerEvents: 'none',
-            zIndex: 10,
-            filter: 'drop-shadow(0 1px 3px rgba(0,0,0,0.7))',
-          }}
-        />
-      )}
+      <img src={getCardImage(card.rank, card.suit)} style={{
+        width: '100%', 
+        height: '100%', 
+        objectFit: 'contain',
+        borderRadius: '6px',
+      }} />
     </div>
   )
 }

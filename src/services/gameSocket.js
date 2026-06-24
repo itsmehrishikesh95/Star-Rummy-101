@@ -57,6 +57,22 @@ export function emitDiscardCard(code, cardId) {
   console.log('[gameSocket] emit discard_card', { code, cardId, playerId })
 }
 
+export function emitDeclareHand(code, cardId) {
+  const s = socketService.socket
+  if (!s?.connected) return
+  const playerId = getOrCreatePlayerId()
+  s.emit('declare_hand', { code, cardId, playerId })
+  console.log('[gameSocket] emit declare_hand', { code, cardId, playerId })
+}
+
+export function emitDropGame(code) {
+  const s = socketService.socket
+  if (!s?.connected) return
+  const playerId = getOrCreatePlayerId()
+  s.emit('drop_game', { code, playerId })
+  console.log('[gameSocket] emit drop_game', { code, playerId })
+}
+
 // ── Subscribe ────────────────────────────────────────────────────────────────
 /**
  * Subscribe to server game events for a given room code.
@@ -75,6 +91,7 @@ export function subscribeToGame(code, mySocketId, callbacks) {
     onGameError   = () => {},
     onHostChanged = () => {},
     onRoomClosed  = () => {},
+    onRoundResult = () => {},
   } = callbacks
 
   // ── game_state ─────────────────────────────────────────────────────────────
@@ -108,10 +125,19 @@ export function subscribeToGame(code, mySocketId, callbacks) {
     onRoomClosed(data)
   }
 
+  // ── round_result ───────────────────────────────────────────────────────────
+  // Server sends full round results (all hands revealed) on declare / drop end.
+  function handleRoundResult(data) {
+    if (data.code !== code) return
+    console.log('[gameSocket] round_result', { round: data.round, type: data.type, valid: data.valid })
+    onRoundResult(data)
+  }
+
   s.on('game_state',    handleGameState)
   s.on('game_error',    handleGameError)
   s.on('host_changed',  handleHostChanged)
   s.on('room_closed',   handleRoomClosed)
+  s.on('round_result',  handleRoundResult)
 
   // Return cleanup
   return () => {
@@ -119,5 +145,6 @@ export function subscribeToGame(code, mySocketId, callbacks) {
     s.off('game_error',    handleGameError)
     s.off('host_changed',  handleHostChanged)
     s.off('room_closed',   handleRoomClosed)
+    s.off('round_result',  handleRoundResult)
   }
 }

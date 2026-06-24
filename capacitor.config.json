@@ -1,5 +1,12 @@
 {
   "appId": "com.starrummy.game",
   "appName": "Star Rummy",
-  "webDir": "dist"
+  "webDir": "dist",
+  "android": {
+    "allowMixedContent": true,
+    "webContentsDebuggingEnabled": false
+  },
+  "server": {
+    "androidScheme": "https"
+  }
 }

@@ -1,6 +1,11 @@
 import express from 'express';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
+import {
+  RANKS,
+  calcScore,
+  getDeclarationVerdict,
+} from './src/game/rummyRules.js';
 
 const app = express();
 const httpServer = createServer(app);
@@ -17,12 +22,17 @@ const io = new Server(httpServer, {
 const rooms = {};
 
 // ── Game store ─────────────────────────────────────────────────────────────
-// { roomCode: { players, deck, hands, discardPile, turnIndex, state } }
+// {
+//   roomCode: {
+//     players, deck, hands, discardPile, turnIndex, state,
+//     wildJoker, scores{}, eliminated{}, dropped{}, hasDrawn,
+//     round, declareValid, roundEnding
+//   }
+// }
 const games = {};
 
-// ── Deck helpers ───────────────────────────────────────────────────────────
+// ── Card / rank helpers ──────────────────────────────────────────────────────
 const SUITS = ['S', 'H', 'D', 'C'];
-const RANKS = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
 
 function buildDeck() {
   const deck = [];
@@ -56,36 +66,208 @@ function shuffle(deck) {
   return d;
 }
 
-// Personalised snapshot — each player only sees their own hand.
+// ── Game lifecycle helpers ────────────────────────────────────────────────────
+
+// Players still in the game (not eliminated)
+function activePlayers(game) {
+  return game.players.filter((p) => !game.eliminated[p.playerId]);
+}
+
+// Players that can still take a turn this round (not eliminated, not dropped)
+function inRoundPlayers(game) {
+  return game.players.filter((p) => !game.eliminated[p.playerId] && !game.dropped[p.playerId]);
+}
+
+// Find the next seat index that can act (skips eliminated + dropped).
+function nextActiveTurn(game, from) {
+  for (let i = 0; i < game.players.length; i++) {
+    const n = (from + 1 + i) % game.players.length;
+    const p = game.players[n];
+    if (!game.eliminated[p.playerId] && !game.dropped[p.playerId]) return n;
+  }
+  return from;
+}
+
+// Find the next seat that is still in the game (skips eliminated only).
+// Used to choose the first player for a fresh round.
+function nextNonEliminated(game, from) {
+  for (let i = 0; i < game.players.length; i++) {
+    const n = (from + 1 + i) % game.players.length;
+    const p = game.players[n];
+    if (!game.eliminated[p.playerId]) return n;
+  }
+  return from;
+}
+
+// Deal a fresh round into an existing game object. Keeps cumulative scores +
+// eliminations; resets per-round flags (dropped, hasDrawn).
+function dealRound(game, firstTurnIndex) {
+  const deck = shuffle(game.players.length >= 5 ? buildTwoDecks() : buildDeck());
+  const hands = {};
+  let cursor = 0;
+
+  for (const player of game.players) {
+    if (game.eliminated[player.playerId]) {
+      hands[player.id] = [];
+    } else {
+      hands[player.id] = deck.slice(cursor, cursor + 13);
+      cursor += 13;
+    }
+  }
+
+  const remaining = deck.slice(cursor);
+  const firstDiscard = remaining.shift();   // top of open pile
+  const wildJoker = remaining.shift();      // cut joker indicator
+
+  game.deck = remaining;
+  game.hands = hands;
+  game.discardPile = firstDiscard ? [firstDiscard] : [];
+  game.wildJoker = wildJoker || null;
+  game.dropped = {};
+  game.hasDrawn = false;
+  game.turnIndex = firstTurnIndex;
+  game.state = 'playing';
+  game.roundEnding = false;
+}
+
+// ── Snapshot ──────────────────────────────────────────────────────────────────
+// Personalised — each player only sees their own hand; others expose handSize.
 function buildSnapshot(game, forSocketId) {
   const playerMeta = game.players.map((p) => ({
-    id:       p.id,
-    name:     p.name,
-    handSize: (game.hands[p.id] || []).length,
-    // Only the requesting socket gets their full hand
-    hand:     p.id === forSocketId ? (game.hands[p.id] || []) : undefined,
+    id:           p.id,
+    name:         p.name,
+    handSize:     (game.hands[p.id] || []).length,
+    score:        game.scores[p.playerId] || 0,
+    isEliminated: !!game.eliminated[p.playerId],
+    dropped:      !!game.dropped[p.playerId],
+    hand:         p.id === forSocketId ? (game.hands[p.id] || []) : undefined,
   }));
+
+  const me = game.players.find((p) => p.id === forSocketId);
+  const isMyTurn = game.players[game.turnIndex]?.id === forSocketId;
 
   return {
     players:     playerMeta,
-    hand:        game.hands[forSocketId] || [],   // convenience top-level field
+    hand:        game.hands[forSocketId] || [],
     discardPile: game.discardPile,
     deckSize:    game.deck.length,
     turnIndex:   game.turnIndex,
     currentTurn: game.players[game.turnIndex]?.id ?? null,
     state:       game.state,
+    wildJoker:   game.wildJoker,
+    round:       game.round,
+    hasDrawn:    isMyTurn ? game.hasDrawn : false,
+    myScore:     me ? (game.scores[me.playerId] || 0) : 0,
+    myDropped:   me ? !!game.dropped[me.playerId] : false,
+    myEliminated: me ? !!game.eliminated[me.playerId] : false,
   };
 }
 
-// Emit personalised game_state to every player in the room.
 function broadcastGameState(code) {
   const game = games[code];
   if (!game) return;
-  console.log('📡 Sending game_state to room:', code, '— players:', game.players.length);
   for (const player of game.players) {
-    const snapshot = buildSnapshot(game, player.id);
-    io.to(player.id).emit('game_state', { code, ...snapshot });
+    io.to(player.id).emit('game_state', { code, ...buildSnapshot(game, player.id) });
   }
+}
+
+// Apply round points to cumulative scores + recompute eliminations.
+function applyRoundPoints(game, pointsByPlayerId) {
+  for (const p of game.players) {
+    const delta = pointsByPlayerId[p.playerId] || 0;
+    game.scores[p.playerId] = (game.scores[p.playerId] || 0) + delta;
+    if (game.scores[p.playerId] >= 101) game.eliminated[p.playerId] = true;
+  }
+}
+
+// Conclude a round and broadcast results. Then schedule the next round (or end).
+function concludeRound(code, { declarerIndex = null, valid = false, type = 'declare' }) {
+  const game = games[code];
+  if (!game || game.roundEnding) return;
+  game.roundEnding = true;
+  game.state = 'roundOver';
+
+  const wildRank = game.wildJoker?.rank;
+  const pointsByPlayerId = {};
+
+  game.players.forEach((p, idx) => {
+    let roundPoints = 0;
+    if (type === 'declare') {
+      if (idx === declarerIndex) {
+        roundPoints = valid ? 0 : 80;
+      } else if (game.dropped[p.playerId] || game.eliminated[p.playerId]) {
+        roundPoints = 0; // drop penalty already applied; eliminated players don't accrue more
+      } else {
+        roundPoints = calcScore(game.hands[p.id] || [], wildRank);
+      }
+    }
+    // type === 'laststanding' → everyone 0 (drop penalties already applied)
+    pointsByPlayerId[p.playerId] = roundPoints;
+  });
+
+  applyRoundPoints(game, pointsByPlayerId);
+
+  // Determine winner (only one active player remains)
+  const stillActive = activePlayers(game);
+  let winner = null;
+  if (stillActive.length === 1) {
+    winner = { id: stillActive[0].id, name: stillActive[0].name };
+    game.state = 'gameover';
+  }
+
+  // Build full result (all hands revealed at round end)
+  const resultPlayers = game.players.map((p, idx) => ({
+    id:           p.id,
+    name:         p.name,
+    hand:         game.hands[p.id] || [],
+    roundPoints:  pointsByPlayerId[p.playerId] || 0,
+    totalScore:   game.scores[p.playerId] || 0,
+    isEliminated: !!game.eliminated[p.playerId],
+    dropped:      !!game.dropped[p.playerId],
+    isDeclarer:   idx === declarerIndex,
+  }));
+
+  const declarerName = declarerIndex != null ? game.players[declarerIndex]?.name : null;
+  let message;
+  if (type === 'laststanding') {
+    message = `${winner ? winner.name : 'Last player'} wins the round — everyone else dropped.`;
+  } else if (valid) {
+    message = `${declarerName} made a valid declaration!`;
+  } else {
+    message = `${declarerName} made a wrong show (+80 pts).`;
+  }
+
+  io.to(code).emit('round_result', {
+    code,
+    round:     game.round,
+    type,
+    valid,
+    declarerName,
+    wildJoker: game.wildJoker,
+    players:   resultPlayers,
+    winner,
+    message,
+  });
+
+  console.log(`[round_result] code="${code}" round=${game.round} type=${type} valid=${valid} winner=${winner?.name || 'none'}`);
+
+  // Next round (or stop the game)
+  if (winner) {
+    // Game over — keep the game object so late resyncs still work.
+    return;
+  }
+
+  setTimeout(() => {
+    const g = games[code];
+    if (!g || g.state === 'gameover') return;
+    // First turn for next round: next non-eliminated seat after the previous starter.
+    g.round += 1;
+    const start = nextNonEliminated(g, g.roundStartIndex ?? 0);
+    g.roundStartIndex = start;
+    dealRound(g, start);
+    console.log(`[next_round] code="${code}" round=${g.round} firstTurn=${start}`);
+    broadcastGameState(code);
+  }, 6500);
 }
 
 // ── Health check ───────────────────────────────────────────────────────────
@@ -100,19 +282,13 @@ io.on('connection', (socket) => {
   // ── register_room ──────────────────────────────────────────────────────────
   socket.on('register_room', ({ code, playerName, playerId }) => {
     if (!code) return;
-
-    console.log('REGISTER RECEIVED:', code, '| playerId:', playerId);
-
     rooms[code] = {
       host:         socket.id,
-      hostPlayerId: playerId || socket.id,   // persistent across reconnects
+      hostPlayerId: playerId || socket.id,
       players: [{ id: socket.id, playerId: playerId || socket.id, name: playerName || 'Host' }],
     };
-
     socket.join(code);
-    console.log(`[register_room] SERVER SOCKET ID: ${socket.id} code="${code}" name="${playerName}" playerId="${playerId}"`);
-    console.log('Rooms after register:', Object.keys(rooms));
-
+    console.log(`[register_room] socket.id=${socket.id} code="${code}" name="${playerName}" playerId="${playerId}"`);
     socket.emit('room_registered', { code });
     io.to(code).emit('room_update', { code, players: rooms[code].players });
   });
@@ -120,23 +296,26 @@ io.on('connection', (socket) => {
   // ── validate_room ──────────────────────────────────────────────────────────
   socket.on('validate_room', ({ code }) => {
     const valid = !!(code && rooms[code]);
-    console.log(`[validate_room] code="${code}" valid=${valid}`);
     socket.emit('room_validated', { code, valid });
   });
 
   // ── rejoin_room ────────────────────────────────────────────────────────────
-  // Called by client after reconnect to re-enter the Socket.IO room channel.
-  // payload: { code: string, playerId: string }
   socket.on('rejoin_room', ({ code, playerId }) => {
     const room = rooms[code];
     if (!room) return;
-
-    const player = room.players.find(p => p.playerId === playerId);
+    const player = room.players.find((p) => p.playerId === playerId);
     if (!player) return;
-
-    // Update socket.id and re-join the channel
+    const oldId = player.id;
     player.id = socket.id;
     if (room.hostPlayerId === playerId) room.host = socket.id;
+    // Migrate hand bucket in any active game
+    const game = games[code];
+    if (game && oldId !== socket.id && game.hands[oldId]) {
+      game.hands[socket.id] = game.hands[oldId];
+      delete game.hands[oldId];
+      const gp = game.players.find((p) => p.playerId === playerId);
+      if (gp) gp.id = socket.id;
+    }
     socket.join(code);
     console.log(`[rejoin_room] playerId="${playerId}" new socket.id=${socket.id} code="${code}"`);
     socket.emit('room_rejoined', { code });
@@ -148,179 +327,130 @@ io.on('connection', (socket) => {
       socket.emit('room_error', { message: 'Room not found.' });
       return;
     }
-
     const alreadyIn = rooms[code].players.some((p) => p.id === socket.id || (playerId && p.playerId === playerId));
     if (!alreadyIn) {
       rooms[code].players.push({ id: socket.id, playerId: playerId || socket.id, name: playerName || 'Player' });
       socket.join(code);
       console.log(`[join_room]  socket.id=${socket.id} name="${playerName}" playerId="${playerId}" code="${code}"`);
     }
-
-    console.log('Rooms:', Object.keys(rooms));
-    console.log('ROOM UPDATE SENT:', rooms[code].players.length, 'players in room', code);
     io.to(code).emit('room_update', { code, players: rooms[code].players });
   });
 
-  // ── request_game_state ────────────────────────────────────────────────────
-  // Client emits this on GameScreen mount to resync in case they missed the
-  // initial broadcast (navigation happens after game_state fires).
-  // payload: { code: string, playerId: string }
+  // ── request_game_state ──────────────────────────────────────────────────────
   socket.on('request_game_state', ({ code, playerId }) => {
     const game = games[code];
     if (!game) return;
-    console.log(`[request_game_state] code="${code}" socket.id=${socket.id} playerId="${playerId}"`);
-
-    // Find player by playerId OR by socket.id (fallback for joiners without playerId)
-    let player = game.players.find(p => p.playerId === playerId);
-    if (!player) {
-      player = game.players.find(p => p.id === socket.id);
-    }
-
-    if (player) {
-      if (player.id !== socket.id) {
-        player.id = socket.id;
-        socket.join(code);
+    let player = game.players.find((p) => p.playerId === playerId);
+    if (!player) player = game.players.find((p) => p.id === socket.id);
+    if (!player) return;
+    if (player.id !== socket.id) {
+      // heal socket binding after reconnect
+      const oldId = player.id;
+      if (game.hands[oldId]) {
+        game.hands[socket.id] = game.hands[oldId];
+        delete game.hands[oldId];
       }
-      const snapshot = buildSnapshot(game, socket.id);
-      socket.emit('game_state', { code, ...snapshot });
-      console.log(`[request_game_state] sent game_state to socket.id=${socket.id}`);
-    } else {
-      console.log(`[request_game_state] player not found for socket.id=${socket.id} playerId="${playerId}"`);
+      player.id = socket.id;
+      socket.join(code);
     }
+    socket.emit('game_state', { code, ...buildSnapshot(game, socket.id) });
   });
 
   // ── start_game ─────────────────────────────────────────────────────────────
   socket.on('start_game', ({ code, playerId }) => {
-    console.log('🔥 start_game received:', { code, socketId: socket.id, playerId });
-
     const room = rooms[code];
-    if (!room) {
-      console.log('❌ Room not found:', code);
-      socket.emit('game_error', { message: 'Room not found.' });
-      return;
-    }
-    console.log('HostPlayerId:', room.hostPlayerId, '| players in room:', room.players.length);
+    if (!room) { socket.emit('game_error', { message: 'Room not found.' }); return; }
 
-    // ── Reconnect heal: rebind socket.id if same playerId reconnected ──────
-    const matchedPlayer = room.players.find(p => p.playerId === playerId);
+    const matchedPlayer = room.players.find((p) => p.playerId === playerId);
     if (matchedPlayer && matchedPlayer.id !== socket.id) {
-      console.log('♻️ Rebinding socket after reconnect:', matchedPlayer.id, '→', socket.id);
       matchedPlayer.id = socket.id;
-      if (room.hostPlayerId === playerId) {
-        room.host = socket.id;
-      }
+      if (room.hostPlayerId === playerId) room.host = socket.id;
       socket.join(code);
     }
+    if (!playerId) { socket.emit('game_error', { message: 'Missing player identity.' }); return; }
+    if (playerId !== room.hostPlayerId) { socket.emit('game_error', { message: 'Only the host can start.' }); return; }
+    if (room.players.length < 1) { socket.emit('game_error', { message: 'Need at least 1 player.' }); return; }
+    if (games[code]) return;
 
-    // ── Validate using persistent playerId ─────────────────────────────────
-    if (!playerId) {
-      console.log('❌ Missing playerId');
-      socket.emit('game_error', { message: 'Missing player identity.' });
-      return;
-    }
-    if (playerId !== room.hostPlayerId) {
-      console.log('❌ Not host. Expected:', room.hostPlayerId, 'Got:', playerId);
-      socket.emit('game_error', { message: 'Only the host can start.' });
-      return;
-    }
-    console.log('✅ Host verified via playerId');
-
-    if (room.players.length < 1) {
-      console.log('❌ Not enough players:', room.players.length);
-      socket.emit('game_error', { message: 'Need at least 1 player.' });
-      return;
-    }
-
-    if (games[code]) {
-      console.log('❌ Game already exists for:', code);
-      return;
-    }
-
-    // ── Emit game_starting countdown to all players in the room ──
     console.log('⏳ Starting 10-second countdown for room:', code);
     io.to(code).emit('game_starting', { code, countdown: 10 });
 
-    // ── After 10 seconds, create the game and broadcast game_state ──
     setTimeout(() => {
-      // Double-check game hasn't been created already (e.g. duplicate start)
       if (games[code]) return;
 
-      console.log('Creating game after countdown...');
-      const deck = shuffle(room.players.length >= 5 ? buildTwoDecks() : buildDeck());
-      const players = room.players;
-      const hands = {};
-      let cursor = 0;
-
-      for (const player of players) {
-        hands[player.id] = deck.slice(cursor, cursor + 13);
-        cursor += 13;
-      }
-
-      const remaining = deck.slice(cursor);
-      const firstDiscard = remaining.shift();
-
-      games[code] = {
+      // Build the game shell, then deal round 1 with a random toss.
+      const players = room.players.map((p) => ({ ...p }));
+      const game = {
         players,
-        deck:        remaining,
-        hands,
-        discardPile: firstDiscard ? [firstDiscard] : [],
-        turnIndex:   0,
-        state:       'playing',
+        deck: [],
+        hands: {},
+        discardPile: [],
+        turnIndex: 0,
+        state: 'playing',
+        wildJoker: null,
+        scores: {},
+        eliminated: {},
+        dropped: {},
+        hasDrawn: false,
+        round: 1,
+        roundEnding: false,
+        roundStartIndex: 0,
       };
+      players.forEach((p) => { game.scores[p.playerId] = 0; });
 
-      console.log('✅ Game created:', code, '— players:', players.length);
-      console.log('📡 Broadcasting game_state...');
+      const firstTurn = Math.floor(Math.random() * players.length); // random toss
+      game.roundStartIndex = firstTurn;
+      games[code] = game;
+      dealRound(game, firstTurn);
+
+      console.log(`✅ Game created: ${code} — players: ${players.length}, toss→seat ${firstTurn}, wild=${game.wildJoker?.rank}`);
       broadcastGameState(code);
-    }, 10000); // 10-second delay
+    }, 10000);
   });
 
   // ── draw_card ──────────────────────────────────────────────────────────────
   socket.on('draw_card', ({ code, fromDiscard }) => {
     const game = games[code];
-    if (!game) { socket.emit('game_error', { message: 'Game not found.' }); return; }
+    if (!game || game.state !== 'playing') { socket.emit('game_error', { message: 'Game not active.' }); return; }
 
     const currentPlayer = game.players[game.turnIndex];
     if (!currentPlayer || currentPlayer.id !== socket.id) {
       socket.emit('game_error', { message: 'Not your turn.' });
       return;
     }
+    if (game.hasDrawn) { socket.emit('game_error', { message: 'Already drew this turn.' }); return; }
 
     let card;
     if (fromDiscard) {
-      // Draw from open discard pile
-      if (game.discardPile.length === 0) {
-        socket.emit('game_error', { message: 'Discard pile is empty.' });
-        return;
-      }
+      if (game.discardPile.length === 0) { socket.emit('game_error', { message: 'Discard pile is empty.' }); return; }
       card = game.discardPile.pop();
     } else {
-      // Draw from closed deck
       if (game.deck.length === 0) {
-        // Reshuffle discard pile (keep top card)
         const top = game.discardPile.pop();
         game.deck = shuffle(game.discardPile);
         game.discardPile = top ? [top] : [];
       }
       card = game.deck.shift();
     }
-
     if (!card) { socket.emit('game_error', { message: 'No cards left.' }); return; }
 
     game.hands[socket.id].push(card);
-    console.log(`[draw_card]  socket.id=${socket.id} card=${card.id} fromDiscard=${fromDiscard} code="${code}"`);
+    game.hasDrawn = true;
+    console.log(`[draw_card]  socket.id=${socket.id} card=${card.id} fromDiscard=${!!fromDiscard} code="${code}"`);
     broadcastGameState(code);
   });
 
   // ── discard_card ───────────────────────────────────────────────────────────
   socket.on('discard_card', ({ code, cardId }) => {
     const game = games[code];
-    if (!game) { socket.emit('game_error', { message: 'Game not found.' }); return; }
+    if (!game || game.state !== 'playing') { socket.emit('game_error', { message: 'Game not active.' }); return; }
 
     const currentPlayer = game.players[game.turnIndex];
     if (!currentPlayer || currentPlayer.id !== socket.id) {
       socket.emit('game_error', { message: 'Not your turn.' });
       return;
     }
+    if (!game.hasDrawn) { socket.emit('game_error', { message: 'Draw a card first.' }); return; }
 
     const hand = game.hands[socket.id];
     const cardIndex = hand.findIndex((c) => c.id === cardId);
@@ -328,9 +458,71 @@ io.on('connection', (socket) => {
 
     const [card] = hand.splice(cardIndex, 1);
     game.discardPile.push(card);
-    game.turnIndex = (game.turnIndex + 1) % game.players.length;
+    game.hasDrawn = false;
+    game.turnIndex = nextActiveTurn(game, game.turnIndex);
 
     console.log(`[discard_card] socket.id=${socket.id} card=${card.id} nextTurn=${game.turnIndex}`);
+    broadcastGameState(code);
+  });
+
+  // ── declare_hand ─────────────────────────────────────────────────────────────
+  // payload: { code, cardId }  — cardId is the card sent to the finish slot.
+  socket.on('declare_hand', ({ code, cardId }) => {
+    const game = games[code];
+    if (!game || game.state !== 'playing') { socket.emit('game_error', { message: 'Game not active.' }); return; }
+
+    const turnIndex = game.turnIndex;
+    const currentPlayer = game.players[turnIndex];
+    if (!currentPlayer || currentPlayer.id !== socket.id) {
+      socket.emit('game_error', { message: 'Not your turn.' });
+      return;
+    }
+    if (!game.hasDrawn) { socket.emit('game_error', { message: 'Draw a card before declaring.' }); return; }
+
+    const hand = game.hands[socket.id];
+    const finishIdx = hand.findIndex((c) => c.id === cardId);
+    if (finishIdx === -1) { socket.emit('game_error', { message: 'Finish card not in hand.' }); return; }
+
+    // Move finish card to discard pile, leaving 13 to validate.
+    const [finishCard] = hand.splice(finishIdx, 1);
+    game.discardPile.push(finishCard);
+    game.hasDrawn = false;
+
+    const verdict = getDeclarationVerdict(hand, game.wildJoker?.rank);
+    game.declareValid = !!verdict.valid;
+
+    console.log(`[declare_hand] socket.id=${socket.id} valid=${game.declareValid} reason=${verdict.reason || ''}`);
+    concludeRound(code, { declarerIndex: turnIndex, valid: game.declareValid, type: 'declare' });
+  });
+
+  // ── drop_game ────────────────────────────────────────────────────────────────
+  socket.on('drop_game', ({ code }) => {
+    const game = games[code];
+    if (!game || game.state !== 'playing') { socket.emit('game_error', { message: 'Game not active.' }); return; }
+
+    const currentPlayer = game.players[game.turnIndex];
+    if (!currentPlayer || currentPlayer.id !== socket.id) {
+      socket.emit('game_error', { message: 'You can only drop on your turn.' });
+      return;
+    }
+
+    const pts = game.hasDrawn ? 40 : 20; // middle drop vs first drop
+    const pid = currentPlayer.playerId;
+    game.dropped[pid] = true;
+    game.scores[pid] = (game.scores[pid] || 0) + pts;
+    if (game.scores[pid] >= 101) game.eliminated[pid] = true;
+    game.hasDrawn = false;
+
+    console.log(`[drop_game] socket.id=${socket.id} pts=${pts} total=${game.scores[pid]}`);
+
+    // If only one player remains in the round, they win it automatically.
+    const remaining = inRoundPlayers(game);
+    if (remaining.length <= 1) {
+      concludeRound(code, { type: 'laststanding' });
+      return;
+    }
+
+    game.turnIndex = nextActiveTurn(game, game.turnIndex);
     broadcastGameState(code);
   });
 
@@ -338,39 +530,32 @@ io.on('connection', (socket) => {
   socket.on('disconnect', () => {
     console.log(`[disconnect] socket.id=${socket.id}`);
 
-    // ── Room cleanup with host migration ──────────────────────────────────────
     for (const code of Object.keys(rooms)) {
       const room = rooms[code];
       const wasInRoom = room.players.some((p) => p.id === socket.id);
       if (!wasInRoom) continue;
 
-      // Remove the player
       room.players = room.players.filter((p) => p.id !== socket.id);
 
-      // No players left → delete room and game
       if (room.players.length === 0) {
         delete rooms[code];
         delete games[code];
         console.log(`[cleanup] room "${code}" deleted (empty)`);
         continue;
       }
-
-      // Host left → migrate to next player, game continues
       if (room.host === socket.id) {
         room.host = room.players[0].id;
         io.to(code).emit('host_changed', { code, newHost: room.host });
-        console.log(`[cleanup] host migrated for room "${code}" → ${room.host}`);
       }
-
       io.to(code).emit('room_update', { code, players: room.players });
     }
 
-    // ── Game cleanup — keep game alive, fix turn index ────────────────────────
     for (const code of Object.keys(games)) {
       const game = games[code];
       const removedIndex = game.players.findIndex((p) => p.id === socket.id);
       if (removedIndex === -1) continue;
 
+      const removed = game.players[removedIndex];
       game.players.splice(removedIndex, 1);
       delete game.hands[socket.id];
 
@@ -379,19 +564,14 @@ io.on('connection', (socket) => {
         console.log(`[cleanup] game "${code}" deleted (no players)`);
         continue;
       }
-
-      // Fix turnIndex precisely per spec:
-      // - removed player was before current turn → shift index back by 1
-      // - removed player was the current turn → clamp to valid range
-      if (removedIndex < game.turnIndex) {
-        game.turnIndex -= 1;
+      if (removedIndex < game.turnIndex) game.turnIndex -= 1;
+      if (game.turnIndex >= game.players.length) game.turnIndex = 0;
+      // If the disconnect leaves a single active player, end the round.
+      if (game.state === 'playing' && inRoundPlayers(game).length <= 1) {
+        concludeRound(code, { type: 'laststanding' });
+        continue;
       }
-      if (game.turnIndex >= game.players.length) {
-        game.turnIndex = 0;
-      }
-
       broadcastGameState(code);
-      console.log(`[cleanup] player removed from game "${code}", turnIndex=${game.turnIndex}`);
     }
   });
 });

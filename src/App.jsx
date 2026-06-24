@@ -9,6 +9,7 @@ import MatchLobbyScreen from './screens/MatchLobbyScreen'
 import MainMenu from './screens/MainMenu'
 import ProfileScreen from './screens/ProfileScreen'
 import PracticeModeScreen from './screens/PracticeModeScreen'
+import AdminPanel from './screens/AdminPanel'
 import { Capacitor } from '@capacitor/core'
 import { ScreenOrientation } from '@capacitor/screen-orientation'
 
@@ -300,6 +301,7 @@ export default function App() {
       case 'otp':           return <Login />
       case 'profile':       return <ProfileScreen />
       case 'practice-mode': return <PracticeModeScreen />
+      case 'admin':         return <AdminPanel />
       case 'room-code':     return <RoomCodeScreen />
       case 'match-lobby':   return <MatchLobbyScreen />
       case 'private-room':  return <PrivateRoomScreen />
